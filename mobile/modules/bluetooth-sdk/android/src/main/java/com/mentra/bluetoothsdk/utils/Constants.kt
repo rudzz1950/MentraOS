@@ -11,7 +11,9 @@ object DeviceTypes {
     const val G2 = "Even Realities G2"
     const val NIMO = "NIMO"
     const val AR99 = "AR99"
-    val ALL = arrayOf(SIMULATED, G1, G2, MACH1, LIVE, Z100, FRAME, NEX, NIMO, AR99)
+    /** Your own glasses. Must match DeviceTypes.CUSTOM in the engine (enums.ts). */
+    const val CUSTOM = "Custom Glasses"
+    val ALL = arrayOf(SIMULATED, G1, G2, MACH1, LIVE, Z100, FRAME, NEX, NIMO, AR99, CUSTOM)
 }
 
 object ControllerTypes {

@@ -29,3 +29,6 @@ export {NEX_PROFILE, NEX_HYPHEN_WIDTH_PX, NEX_SPACE_WIDTH_PX} from "./nex"
 
 // NIMO Dynamic Layout V1
 export {NIMO_PROFILE} from "./nimo"
+
+// Custom Glasses (your own hardware)
+export {CUSTOM_PROFILE, CUSTOM_HYPHEN_WIDTH_PX, CUSTOM_SPACE_WIDTH_PX, CUSTOM_GLYPH_WIDTH_PX} from "./custom"

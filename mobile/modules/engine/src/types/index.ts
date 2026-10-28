@@ -28,6 +28,7 @@ export {
   nimo,
   vuzixZ100,
   mentraDisplay,
+  customGlasses,
 } from "./hardware"
 
 // Applet types

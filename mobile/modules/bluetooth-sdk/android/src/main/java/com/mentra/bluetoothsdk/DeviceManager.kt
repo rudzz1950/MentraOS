@@ -25,6 +25,7 @@ import com.mentra.bluetoothsdk.sgcs.Mach1
 import com.mentra.bluetoothsdk.sgcs.MentraLive
 import com.mentra.bluetoothsdk.sgcs.MentraLivePairingStateStore
 import com.mentra.bluetoothsdk.sgcs.MentraNex
+import com.mentra.bluetoothsdk.sgcs.CustomGlasses
 import com.mentra.bluetoothsdk.sgcs.Nimo
 import com.mentra.bluetoothsdk.sgcs.SGCManager
 import com.mentra.bluetoothsdk.sgcs.Simulated
@@ -1374,6 +1375,8 @@ class DeviceManager internal constructor(initializeHardware: Boolean) {
 
         if (wearable.contains(DeviceTypes.SIMULATED)) {
             sgc = Simulated()
+        } else if (wearable.contains(DeviceTypes.CUSTOM)) {
+            sgc = CustomGlasses()
         } else if (wearable.contains(DeviceTypes.G1)) {
             sgc = G1()
         } else if (wearable.contains(DeviceTypes.G2)) {

@@ -83,6 +83,7 @@ export default function SelectGlassesModelScreen() {
     {deviceModel: DeviceTypes.Z100, key: "vuzix-z100", modelId: "vuzix-z100"},
     {deviceModel: DeviceTypes.NEX, key: "mentra_nex", modelId: "mentra-display"},
     {deviceModel: DeviceTypes.NIMO, key: "nimo", modelId: "nimo"},
+    {deviceModel: DeviceTypes.CUSTOM, key: "custom_glasses", modelId: "custom-glasses"},
   ]
 
   const deployment = deploymentStore.getActive()

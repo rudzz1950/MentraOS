@@ -20,6 +20,7 @@ import {
   Z100_PROFILE,
   NEX_PROFILE,
   NIMO_PROFILE,
+  CUSTOM_PROFILE,
   TextMeasurer,
   TextWrapper,
   ColumnComposer,
@@ -41,7 +42,7 @@ import {isGlassesConnected} from "./GlassesReadiness"
 /**
  * Supported device models for display processing
  */
-export type DeviceModel = "g1" | "g2" | "z100" | "nex" | "nimo" | "mach1" | "mentra-live" | "simulated" | "unknown"
+export type DeviceModel = "g1" | "g2" | "z100" | "nex" | "nimo" | "mach1" | "mentra-live" | "simulated" | "custom" | "unknown"
 
 /**
  * Display event types that we process
@@ -212,6 +213,7 @@ const DEVICE_PROFILES: Record<DeviceModel, DisplayProfile> = {
   "z100": Z100_PROFILE,
   "nex": NEX_PROFILE,
   "nimo": NIMO_PROFILE,
+  "custom": CUSTOM_PROFILE,
   "mach1": Z100_PROFILE, // Mach1 uses same hardware as Vuzix Z100
   "mentra-live": G1_PROFILE, // Mentra Live has no display, uses G1 as fallback
   "simulated": G1_PROFILE, // Simulated uses G1 profile
@@ -225,6 +227,12 @@ function normalizeModelName(modelName: string | null | undefined): DeviceModel {
   if (!modelName) return "unknown"
 
   const lower = modelName.toLowerCase()
+
+  // Checked first: the placeholder name contains no other model's keyword today,
+  // but a rename might (e.g. "...G2..."), so give your own device precedence.
+  if (lower.includes("custom glasses")) {
+    return "custom"
+  }
 
   if (isNimoModelName(modelName)) {
     return "nimo"

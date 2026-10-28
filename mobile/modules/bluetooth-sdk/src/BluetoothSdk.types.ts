@@ -730,6 +730,7 @@ export const DeviceModels = {
   Frame: "Brilliant Frame",
   Nimo: "NIMO",
   Ar99: "AR99",
+  CustomGlasses: "Custom Glasses",
   R1: "Even Realities R1",
 } as const
 

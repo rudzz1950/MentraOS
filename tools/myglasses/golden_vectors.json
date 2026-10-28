@@ -1,0 +1,276 @@
+{
+  "contract_version": 0,
+  "generator": "tools/myglasses/golden_vectors.py",
+  "framing": "[0x02][seq][total_chunks][chunk_index][fragment]",
+  "notes": [
+    "frames_hex is exactly what the phone writes to characteristic 0x71FF.",
+    "Concatenating each frame after its 4-byte header reproduces payload_hex.",
+    "payload_hex is a serialized mentraos.ble.PhoneToGlasses."
+  ],
+  "vectors": [
+    {
+      "name": "clear_display",
+      "note": "start a fresh frame",
+      "mtu": 247,
+      "seq": 0,
+      "payload_hex": "0a07636c6561722d31f20200",
+      "payload_len": 12,
+      "frames_hex": [
+        "020001000a07636c6561722d31f20200"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "commit",
+      "note": "paint the queued batch",
+      "mtu": 247,
+      "seq": 1,
+      "payload_hex": "0a08636f6d6d69742d31da0200",
+      "payload_len": 13,
+      "frames_hex": [
+        "020101000a08636f6d6d69742d31da0200"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "commit_mtu23",
+      "note": "same commit at the default MTU",
+      "mtu": 23,
+      "seq": 2,
+      "payload_hex": "0a08636f6d6d69742d31da0200",
+      "payload_len": 13,
+      "frames_hex": [
+        "020201000a08636f6d6d69742d31da0200"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "commit_no_msg_id",
+      "note": "msg_id omitted: proto3 default empty string",
+      "mtu": 247,
+      "seq": 3,
+      "payload_hex": "da0200",
+      "payload_len": 3,
+      "frames_hex": [
+        "02030100da0200"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "text_hello",
+      "note": "one ASCII line at the top",
+      "mtu": 247,
+      "seq": 4,
+      "payload_hex": "0a057478742d30f201110a0b48656c6c6f20776f726c64100f3008",
+      "payload_len": 27,
+      "frames_hex": [
+        "020401000a057478742d30f201110a0b48656c6c6f20776f726c64100f3008"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "text_line1",
+      "note": "second line, y = 16",
+      "mtu": 247,
+      "seq": 5,
+      "payload_hex": "0a057478742d31f201130a0b5365636f6e64206c696e65100f28103008",
+      "payload_len": 29,
+      "frames_hex": [
+        "020501000a057478742d31f201130a0b5365636f6e64206c696e65100f28103008"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "text_line3",
+      "note": "last line of the 4-line panel, y = 48",
+      "mtu": 247,
+      "seq": 6,
+      "payload_hex": "0a057478742d33f201130a0b466f75727468206c696e65100f28303008",
+      "payload_len": 29,
+      "frames_hex": [
+        "020601000a057478742d33f201130a0b466f75727468206c696e65100f28303008"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "text_empty",
+      "note": "empty string must not crash the renderer",
+      "mtu": 247,
+      "seq": 7,
+      "payload_hex": "0a057478742d65f20104100f3008",
+      "payload_len": 14,
+      "frames_hex": [
+        "020701000a057478742d65f20104100f3008"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "text_21_chars",
+      "note": "exactly one full 21-character line",
+      "mtu": 247,
+      "seq": 8,
+      "payload_hex": "0a067478742d3231f2011b0a154142434445464748494a4b4c4d4e4f505152535455100f3008",
+      "payload_len": 38,
+      "frames_hex": [
+        "020801000a067478742d3231f2011b0a154142434445464748494a4b4c4d4e4f505152535455100f3008"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "text_utf8_devanagari",
+      "note": "multi-byte UTF-8: Hindi",
+      "mtu": 247,
+      "seq": 9,
+      "payload_hex": "0a067478742d6869f201180a12e0a4a8e0a4aee0a4b8e0a58de0a4a4e0a587100f3008",
+      "payload_len": 35,
+      "frames_hex": [
+        "020901000a067478742d6869f201180a12e0a4a8e0a4aee0a4b8e0a58de0a4a4e0a587100f3008"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "text_utf8_cjk",
+      "note": "multi-byte UTF-8: Japanese",
+      "mtu": 247,
+      "seq": 10,
+      "payload_hex": "0a067478742d6a61f201170a0fe38193e38293e381abe381a1e381af100f28103008",
+      "payload_len": 34,
+      "frames_hex": [
+        "020a01000a067478742d6a61f201170a0fe38193e38293e381abe381a1e381af100f28103008"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "text_utf8_emoji",
+      "note": "4-byte UTF-8 sequence",
+      "mtu": 247,
+      "seq": 11,
+      "payload_hex": "0a067478742d656df2010f0a076f6b20f09f918d100f28203008",
+      "payload_len": 26,
+      "frames_hex": [
+        "020b01000a067478742d656df2010f0a076f6b20f09f918d100f28203008"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "text_utf8_accents",
+      "note": "2-byte Latin-1 supplement",
+      "mtu": 247,
+      "seq": 12,
+      "payload_hex": "0a067478742d6672f201160a10636166c3a920c3a0206c27c3a974c3a9100f3008",
+      "payload_len": 33,
+      "frames_hex": [
+        "020c01000a067478742d6672f201160a10636166c3a920c3a0206c27c3a974c3a9100f3008"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "text_long_mtu23",
+      "note": "fragments at the default MTU",
+      "mtu": 23,
+      "seq": 13,
+      "payload_hex": "0a087478742d6c6f6e67f2014d0a4754686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f672c20616761696e20616e6420616761696e20616e6420616761696e2e100f3008",
+      "payload_len": 90,
+      "frames_hex": [
+        "020d06000a087478742d6c6f6e67f2014d0a4754",
+        "020d0601686520717569636b2062726f776e2066",
+        "020d06026f78206a756d7073206f766572207468",
+        "020d060365206c617a7920646f672c2061676169",
+        "020d06046e20616e6420616761696e20616e6420",
+        "020d0605616761696e2e100f3008"
+      ],
+      "frame_count": 6
+    },
+    {
+      "name": "text_long_mtu247",
+      "note": "same text, single frame at MTU 247",
+      "mtu": 247,
+      "seq": 14,
+      "payload_hex": "0a087478742d6c6f6e67f2014d0a4754686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f672c20616761696e20616e6420616761696e20616e6420616761696e2e100f3008",
+      "payload_len": 90,
+      "frames_hex": [
+        "020e01000a087478742d6c6f6e67f2014d0a4754686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f672c20616761696e20616e6420616761696e20616e6420616761696e2e100f3008"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "text_utf8_long_mtu23",
+      "note": "a fragment boundary splits a UTF-8 sequence",
+      "mtu": 23,
+      "seq": 15,
+      "payload_hex": "0a0b7478742d6a612d6c6f6e67f2016c0a66e38193e38293e381abe381a1e381afe4b896e7958ce38081e38193e3828ce381afe38386e382b9e38388e381a7e38199e38082e38193e38293e381abe381a1e381afe4b896e7958ce38081e38193e3828ce381afe38386e382b9e38388e381a7e38199e38082100f3008",
+      "payload_len": 124,
+      "frames_hex": [
+        "020f08000a0b7478742d6a612d6c6f6e67f2016c",
+        "020f08010a66e38193e38293e381abe381a1e381",
+        "020f0802afe4b896e7958ce38081e38193e3828c",
+        "020f0803e381afe38386e382b9e38388e381a7e3",
+        "020f08048199e38082e38193e38293e381abe381",
+        "020f0805a1e381afe4b896e7958ce38081e38193",
+        "020f0806e3828ce381afe38386e382b9e38388e3",
+        "020f080781a7e38199e38082100f3008"
+      ],
+      "frame_count": 8
+    },
+    {
+      "name": "mic_enable",
+      "note": "start the LC3 mic stream",
+      "mtu": 247,
+      "seq": 16,
+      "payload_hex": "0a066d69632d6f6ea201020801",
+      "payload_len": 13,
+      "frames_hex": [
+        "021001000a066d69632d6f6ea201020801"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "mic_disable",
+      "note": "stop the mic stream",
+      "mtu": 247,
+      "seq": 17,
+      "payload_hex": "0a076d69632d6f6666a20100",
+      "payload_len": 12,
+      "frames_hex": [
+        "021101000a076d69632d6f6666a20100"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "battery_state",
+      "note": "request the battery level",
+      "mtu": 247,
+      "seq": 18,
+      "payload_hex": "0a06626174742d315a00",
+      "payload_len": 10,
+      "frames_hex": [
+        "021201000a06626174742d315a00"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "glasses_info",
+      "note": "request firmware and model info",
+      "mtu": 247,
+      "seq": 19,
+      "payload_hex": "0a06696e666f2d316200",
+      "payload_len": 10,
+      "frames_hex": [
+        "021301000a06696e666f2d316200"
+      ],
+      "frame_count": 1
+    },
+    {
+      "name": "disconnect",
+      "note": "intentional teardown",
+      "mtu": 247,
+      "seq": 20,
+      "payload_hex": "0a056279652d315200",
+      "payload_len": 9,
+      "frames_hex": [
+        "021401000a056279652d315200"
+      ],
+      "frame_count": 1
+    }
+  ]
+}

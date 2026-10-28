@@ -12,6 +12,8 @@ export enum DeviceTypes {
   NEX = "Mentra Display",
   FRAME = "Brilliant Frame",
   NIMO = "NIMO",
+  /** Your own glasses (Sprint 1). Rename here and in CUSTOM_GLASSES_MODEL_NAME only. */
+  CUSTOM = "Custom Glasses",
 }
 
 export enum ControllerTypes {

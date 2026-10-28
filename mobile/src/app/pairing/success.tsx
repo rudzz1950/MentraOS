@@ -122,6 +122,7 @@ export default function PairingSuccessScreen() {
       ]
       break
     case DeviceTypes.NEX:
+    case DeviceTypes.CUSTOM:
       steps = [
         {
           name: "Start Onboarding",

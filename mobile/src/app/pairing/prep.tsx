@@ -289,6 +289,7 @@ export default function PairingPrepScreen() {
       case DeviceTypes.Z100:
         return <VuzixZ100PairingGuide />
       case DeviceTypes.NEX:
+      case DeviceTypes.CUSTOM: // Custom Glasses reuse the Mentra Display guide until they get their own
         return <MentraDisplayGlassesPairingGuide />
       case DeviceTypes.NIMO:
         return <NimoPreparation onContinue={advanceToPairing} />

@@ -233,6 +233,7 @@ export {
   nimo,
   vuzixZ100,
   mentraDisplay,
+  customGlasses,
 } from "./types"
 export type {
   HardwareRequirement,

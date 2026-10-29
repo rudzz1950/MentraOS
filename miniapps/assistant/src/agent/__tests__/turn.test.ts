@@ -5,6 +5,7 @@ import {MemoryBlobStore, MemoryKeyValueStore} from "../../memory/ports"
 import {ModelRouter, ModelsUnavailableError, rulesAnswer} from "../model"
 import type {Clock, Hud, ModelClient, Tool, Voice} from "../ports"
 import {classify} from "../router"
+import {STANDIN_OLED, TARGET_HUD} from "../../hud/panel"
 import {Assistant, confirmationCard, fitToHud, splitSentences} from "../turn"
 
 const T0 = new Date("2026-10-29T14:05:00+05:30").getTime()
@@ -291,10 +292,21 @@ describe("the confirmation card", () => {
 })
 
 describe("fitting the panel", () => {
-  test("wraps to at most two lines of 21 characters", () => {
+  // The panel's real geometry, not the two lines this test used to assume:
+  // 128x64 at a 6x10 font is 21 columns, and the capability profile allows
+  // four text lines. See hud/panel.ts.
+  test("wraps within the panel's four rows of 21 characters", () => {
     const lines = fitToHud("The quick brown fox jumps over the lazy dog again and again")
-    expect(lines.length).toBeLessThanOrEqual(2)
-    for (const l of lines) expect(l.length).toBeLessThanOrEqual(21)
+    expect(lines.length).toBeLessThanOrEqual(STANDIN_OLED.content.rows)
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(STANDIN_OLED.cols)
+  })
+
+  test("the wider HUD shows more of a long answer", () => {
+    const text =
+      "Twenty-eight degrees and overcast in Bengaluru, with rain likely after four this afternoon."
+    expect(fitToHud(text, TARGET_HUD).join(" ").length).toBeGreaterThan(
+      fitToHud(text, STANDIN_OLED).join(" ").length,
+    )
   })
 
   test("a short answer stays one line", () => {

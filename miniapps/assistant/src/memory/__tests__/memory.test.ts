@@ -461,3 +461,165 @@ describe("revoking a scope", () => {
     await expect(m.deleteScope("")).rejects.toThrow()
   })
 })
+
+describe("collecting what has expired", () => {
+  test("expired rows are actually deleted, not just hidden from reads", async () => {
+    // Expiry was honoured on the read path but nothing removed the row, so it
+    // sat in storage indefinitely. A retention promise enforced only at read
+    // time is not a retention promise.
+    const m = service()
+    const stored = await m.add({
+      class: "active_task",
+      text: "send the deck after the call",
+      source: {turnId: "t1", turnAt: 1},
+      expiresAt: 1,
+    })
+    expect((await m.list()).length).toBe(0) // already hidden
+    expect((await m.list({includeExpired: true})).length).toBe(1) // but still there
+
+    const receipt = await m.collect()
+    expect(receipt.deleted).toBe(1)
+    expect(receipt.ids).toEqual([stored.id])
+    expect((await m.list({includeExpired: true})).length).toBe(0)
+  })
+
+  test("a live memory is left alone", async () => {
+    const m = service()
+    await m.add({
+      class: "active_task",
+      text: "order the dev kit",
+      source: {turnId: "t1", turnAt: 1},
+      expiresAt: Number.MAX_SAFE_INTEGER,
+    })
+    expect((await m.collect()).deleted).toBe(0)
+    expect((await m.list()).length).toBe(1)
+  })
+
+  test("a memory with no expiry is never collected", async () => {
+    const m = service()
+    await m.add({class: "profile_fact", text: "works on wearables", source: {turnId: "t1", turnAt: 1}})
+    expect((await m.collect()).deleted).toBe(0)
+  })
+
+  test("a pinned memory is never collected, which is what pinning means", async () => {
+    const m = service()
+    await m.add({
+      class: "episodic",
+      text: "met Tanu at the Agara Lake walk",
+      source: {turnId: "t1", turnAt: 1},
+      expiresAt: 1,
+      pinned: true,
+    })
+    expect((await m.collect()).deleted).toBe(0)
+    expect((await m.list({includeExpired: true})).length).toBe(1)
+  })
+
+  test("the collected memory is gone from search too", async () => {
+    const m = service()
+    await m.add({
+      class: "active_task",
+      text: "chase the compressor quote",
+      source: {turnId: "t1", turnAt: 1},
+      expiresAt: 1,
+    })
+    await m.collect()
+    expect((await m.search("compressor")).length).toBe(0)
+  })
+})
+
+describe("applying a consolidation plan", () => {
+  const pref = (text: string) => ({
+    class: "stable_preference" as const,
+    text,
+    source: {turnId: "t1", turnAt: 1},
+  })
+
+  test("duplicates are merged and the store shrinks", async () => {
+    const m = service()
+    await m.add(pref("keep answers short and direct"))
+    await m.add(pref("keep answers short and direct"))
+    const plan = await m.consolidationPlan()
+    expect(plan.duplicates.length).toBe(1)
+
+    const result = await m.applyDedupe(plan.duplicates)
+    expect(result.merged).toBe(1)
+    expect(result.removed).toBe(1)
+    expect((await m.list()).length).toBe(1)
+  })
+
+  test("the plan itself writes nothing", async () => {
+    const m = service()
+    await m.add(pref("keep answers short and direct"))
+    await m.add(pref("keep answers short and direct"))
+    await m.consolidationPlan()
+    expect((await m.list()).length).toBe(2)
+  })
+
+  test("contradictions are reported and left alone for the wearer to settle", async () => {
+    const m = service()
+    await m.add(pref("keep answers short"))
+    await m.add(pref("keep answers long"))
+    const plan = await m.consolidationPlan()
+    expect(plan.contradictions.length).toBe(1)
+    // applyDedupe touches only duplicates.
+    await m.applyDedupe(plan.duplicates)
+    expect((await m.list()).length).toBe(2)
+  })
+
+  test("captured memories in different scopes are never merged", async () => {
+    const m = service()
+    const cap = (scopeId: string) => ({
+      class: "episodic" as const,
+      text: "the compressor was replaced in March",
+      source: {turnId: "t1", turnAt: 1, provenance: "captured" as const, scopeId},
+    })
+    await m.add(cap("scope-1"))
+    await m.add(cap("scope-2"))
+
+    const plan = await m.consolidationPlan()
+    expect(plan.duplicates).toEqual([])
+    expect((await m.list()).length).toBe(2)
+    // Each scope still deletes exactly its own.
+    expect((await m.deleteScope("scope-1")).deleted).toBe(1)
+    expect((await m.list()).length).toBe(1)
+  })
+
+  test("a hand-made group crossing scopes is refused even if passed directly", async () => {
+    // The plan is re-checked on apply: merging across a consent scope must be
+    // impossible even by accident or by a stale plan.
+    const m = service()
+    const a = await m.add({
+      class: "episodic",
+      text: "the compressor was replaced in March",
+      source: {turnId: "t1", turnAt: 1, provenance: "captured", scopeId: "scope-1"},
+    })
+    const b = await m.add({
+      class: "episodic",
+      text: "the compressor was replaced in March",
+      source: {turnId: "t1", turnAt: 1, provenance: "captured", scopeId: "scope-2"},
+    })
+    const result = await m.applyDedupe([{keep: a, merge: [b], similarity: 1}])
+    expect(result.merged).toBe(0)
+    expect((await m.list()).length).toBe(2)
+  })
+
+  test("a merged memory is still findable by the text that survived", async () => {
+    const m = service()
+    await m.add(pref("keep answers short and direct"))
+    await m.add(pref("keep answers short and direct please"))
+    const plan = await m.consolidationPlan()
+    expect(plan.duplicates.length).toBe(1)
+    await m.applyDedupe(plan.duplicates)
+    const hits = await m.search("answers")
+    expect(hits.length).toBe(1)
+    // The fuller wording is what survived, and it is what search finds.
+    expect(hits[0].memory.text).toContain("please")
+  })
+
+  test("an empty plan is harmless", async () => {
+    const m = service()
+    await m.add(pref("keep answers short"))
+    expect(await m.applyDedupe([])).toEqual({merged: 0, removed: 0})
+    expect((await m.list()).length).toBe(1)
+  })
+})

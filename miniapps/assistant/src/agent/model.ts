@@ -46,29 +46,60 @@ export class ModelRouter {
    * Streams the answer, falling through the tiers on failure. `onChunk` fires
    * as text arrives so the display and the voice can start before the whole
    * answer exists.
+   *
+   * `signal` is the caller's own cancellation — barge-in. It is NOT a failure,
+   * so it must not fall through to the next tier: the router used to retry on
+   * any throw, which meant a user speaking over the assistant cancelled tier
+   * one and immediately started tier two. Cancellation ends the turn.
    */
-  async complete(prompt: string, onChunk?: (s: string) => void): Promise<RouteResult> {
+  async complete(
+    prompt: string,
+    opts: {onChunk?: (s: string) => void; signal?: AbortSignal} = {},
+  ): Promise<RouteResult> {
+    const {onChunk, signal} = opts
     const failures: string[] = []
+
+    if (signal?.aborted) throw new CancelledError()
 
     for (const tier of this.tiers) {
       const ctrl = new AbortController()
       const timer = this.setTimer(() => ctrl.abort(), this.timeoutMs)
+      const relay = () => ctrl.abort()
+      signal?.addEventListener("abort", relay, {once: true})
       let out = ""
       try {
         for await (const chunk of tier.complete(prompt, ctrl.signal)) {
+          // Checked between chunks as well as on abort: a generator that
+          // ignores its signal would otherwise keep streaming into a HUD the
+          // user has already spoken over.
+          if (signal?.aborted) throw new CancelledError()
           out += chunk
           onChunk?.(chunk)
         }
-        clearTimeout(timer)
+        // Checked again after the stream ends: a cancellation that lands on
+        // the last chunk would otherwise return a complete answer, which then
+        // gets spoken over the person who just interrupted.
+        if (signal?.aborted) throw new CancelledError()
         return {text: out, via: tier.name}
       } catch (err) {
-        clearTimeout(timer)
+        if (signal?.aborted) throw new CancelledError()
         failures.push(`${tier.name}: ${err instanceof Error ? err.message : String(err)}`)
         // Fall through. A partial answer from a failed tier is discarded rather
         // than shown: half an answer read as whole is worse than none.
+      } finally {
+        clearTimeout(timer)
+        signal?.removeEventListener("abort", relay)
       }
     }
     throw new ModelsUnavailableError(failures)
+  }
+}
+
+/** The caller cancelled. Distinct from failure: nothing is retried. */
+export class CancelledError extends Error {
+  constructor() {
+    super("cancelled")
+    this.name = "CancelledError"
   }
 }
 

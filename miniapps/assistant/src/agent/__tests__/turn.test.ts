@@ -6,6 +6,7 @@ import {ModelRouter, ModelsUnavailableError, rulesAnswer} from "../model"
 import type {Clock, Hud, ModelClient, Tool, Voice} from "../ports"
 import {classify} from "../router"
 import {STANDIN_OLED, TARGET_HUD} from "../../hud/panel"
+import {OutboundLimit} from "../bargein"
 import {Assistant, confirmationCard, fitToHud, splitSentences} from "../turn"
 
 const T0 = new Date("2026-10-29T14:05:00+05:30").getTime()
@@ -62,7 +63,12 @@ function memory() {
   })
 }
 
-function build(opts: {model?: ModelClient | ModelClient[]; tools?: Tool[]} = {}) {
+function build(opts: {
+  model?: ModelClient | ModelClient[]
+  tools?: Tool[]
+  outbound?: OutboundLimit
+  driving?: () => boolean
+} = {}) {
   const hud = new FakeHud()
   const voice = new FakeVoice()
   const mem = memory()
@@ -79,6 +85,8 @@ function build(opts: {model?: ModelClient | ModelClient[]; tools?: Tool[]} = {})
     router: new ModelRouter(models, 50),
     clock,
     tools: opts.tools,
+    outbound: opts.outbound,
+    driving: opts.driving,
   })
   return {assistant, hud, voice, mem, models}
 }
@@ -350,5 +358,136 @@ describe("the router itself", () => {
       expect(err).toBeInstanceOf(ModelsUnavailableError)
       expect((err as ModelsUnavailableError).failures.length).toBe(2)
     }
+  })
+})
+
+
+describe("the outbound limit, in the loop", () => {
+  const sender = (sent: string[]): Tool => ({
+    name: "message",
+    consequential: true,
+    async run(args) {
+      sent.push(args)
+      return "Sent."
+    },
+  })
+
+  async function send(a: Assistant, text: string, reply = "yes") {
+    await a.handle(text, true)
+    return a.handle(reply, true)
+  }
+
+  test("five go through on one confirmation each", async () => {
+    const sent: string[] = []
+    const {assistant} = build({tools: [sender(sent)]})
+    for (let i = 0; i < 5; i++) {
+      await send(assistant, `message Tanu number ${i}`)
+    }
+    expect(sent.length).toBe(5)
+    expect(assistant.outboundRemaining).toBe(0)
+  })
+
+  test("the sixth asks again, and says so on the panel", async () => {
+    const sent: string[] = []
+    const {assistant, hud} = build({tools: [sender(sent)]})
+    for (let i = 0; i < 5; i++) await send(assistant, `message Tanu ${i}`)
+
+    await assistant.handle("message Tanu once more", true)
+    expect(assistant.awaitingReconfirmation).toBe(true)
+    expect(hud.last.join(" ")).toContain("Again?")
+  })
+
+  test("a hesitant ok does not send the sixth", async () => {
+    const sent: string[] = []
+    const {assistant} = build({tools: [sender(sent)]})
+    for (let i = 0; i < 5; i++) await send(assistant, `message Tanu ${i}`)
+
+    const r = await send(assistant, "message Tanu once more", "ok")
+    expect(r.answer).toBe("Cancelled.")
+    expect(sent.length).toBe(5)
+  })
+
+  test("an explicit yes does send it", async () => {
+    const sent: string[] = []
+    const {assistant} = build({tools: [sender(sent)]})
+    for (let i = 0; i < 5; i++) await send(assistant, `message Tanu ${i}`)
+
+    await send(assistant, "message Tanu once more", "send")
+    expect(sent.length).toBe(6)
+  })
+
+  test("a question never spends the outbound budget", async () => {
+    const {assistant} = build({tools: [sender([])]})
+    await assistant.handle("what is the plan for tomorrow", true)
+    expect(assistant.outboundRemaining).toBe(5)
+  })
+
+  test("a cancelled action spends nothing", async () => {
+    const sent: string[] = []
+    const {assistant} = build({tools: [sender(sent)]})
+    await send(assistant, "message Tanu hello", "no")
+    expect(sent.length).toBe(0)
+    expect(assistant.outboundRemaining).toBe(5)
+  })
+})
+
+describe("interrupting a turn in flight", () => {
+  /** A model that never finishes until it is cancelled. */
+  class Hanging implements ModelClient {
+    name = "slow"
+    async *complete(_p: string, signal: AbortSignal): AsyncIterable<string> {
+      yield "I "
+      while (!signal.aborted) {
+        await new Promise(r => setTimeout(r, 1))
+      }
+      throw new Error("aborted")
+    }
+  }
+
+  test("barge-in ends the turn without showing a half answer", async () => {
+    const hud = new FakeHud()
+    const voice = new FakeVoice()
+    const assistant = new Assistant({
+      transcripts: {on: () => () => {}},
+      hud,
+      voice,
+      memory: memory(),
+      router: new ModelRouter([new Hanging()], 10_000),
+      clock,
+    })
+    const turn = assistant.handle("what is the weather like", true)
+    // The wearer speaks over it.
+    await new Promise(r => setTimeout(r, 5))
+    assistant.interrupt()
+    const result = await turn
+
+    expect(result.interrupted).toBe(true)
+    expect(result.answer).toBeUndefined()
+    expect(voice.stops).toBe(1)
+    // The panel never showed a partial answer; the last thing on it is the
+    // thinking card.
+    expect(hud.flat.at(-1)).toContain("Thinking")
+  })
+
+  test("interrupting when nothing is running is harmless", () => {
+    const {assistant} = build()
+    expect(() => assistant.interrupt()).not.toThrow()
+  })
+})
+
+describe("driving, in the loop", () => {
+  test("the assistant keeps quiet on the panel while driving", async () => {
+    const {assistant, hud, voice} = build({driving: () => true})
+    await assistant.handle("what is the weather like", true)
+    // Suppressed: the panel was never written to. Speech still happens, which
+    // is the right channel at speed.
+    expect(hud.shown.length).toBe(0)
+    expect(voice.said.length).toBeGreaterThan(0)
+  })
+
+  test("and shows it when stopped", async () => {
+    const {assistant, hud} = build({driving: () => false})
+    await assistant.handle("what is the weather like", true)
+    expect(hud.shown.length).toBeGreaterThan(0)
   })
 })

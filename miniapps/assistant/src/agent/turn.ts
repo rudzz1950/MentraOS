@@ -9,13 +9,11 @@
 
 import type {MemoryStore} from "../memory/memory"
 import type {Memory} from "../memory/types"
+import * as cards from "../hud/cards"
+import {STANDIN_OLED, type PanelProfile} from "../hud/panel"
 import {ModelRouter, ModelsUnavailableError, rulesAnswer} from "./model"
 import {classify, type Intent} from "./router"
 import type {Clock, Hud, Tool, TranscriptSource, Voice} from "./ports"
-
-/** Two lines of panel: the loop splits an answer to fit rather than clipping it. */
-const HUD_LINE_CHARS = 21
-const HUD_LINES = 2
 
 export interface TurnResult {
   intent: Intent
@@ -39,48 +37,43 @@ export interface AssistantOptions {
   tools?: Tool[]
   /** Memories to put in front of the model. Small: the panel and the budget are both small. */
   maxMemories?: number
+  /** Which panel to lay cards out for. Defaults to the dev-board OLED. */
+  panel?: PanelProfile
+  /** True while the wearer is driving; see hud/cards.ts for what that changes. */
+  driving?: () => boolean
 }
 
 /**
- * The confirmation card, built line by line rather than wrapped.
- *
- * Wrapping the whole prompt truncated it: the user saw what was about to be
- * sent and no indication that it needed confirming, which reads as "already
- * sent". The ask gets its own line, and the summary is what gives way.
+ * Kept as thin wrappers over hud/cards so there is ONE layout engine. The two
+ * used to be separate and drifted: the turn loop assumed 21 columns and two
+ * rows no matter which panel was attached.
  */
-export function confirmationCard(summary: string): string[] {
-  const ask = "Say send to confirm"
-  const head = summary.length > HUD_LINE_CHARS
-    ? summary.slice(0, HUD_LINE_CHARS - 1) + "\u2026"
-    : summary
-  return [head, ask]
+export function confirmationCard(summary: string, panel: PanelProfile = STANDIN_OLED): string[] {
+  return cards.confirm(summary, {panel}).rows
 }
 
-export function fitToHud(text: string): string[] {
-  const words = text.split(/\s+/).filter(Boolean)
-  const lines: string[] = []
-  let line = ""
-  for (const w of words) {
-    if (!line) {
-      line = w
-    } else if (line.length + 1 + w.length <= HUD_LINE_CHARS) {
-      line += " " + w
-    } else {
-      lines.push(line)
-      line = w
-    }
-    if (lines.length === HUD_LINES) break
-  }
-  if (lines.length < HUD_LINES && line) lines.push(line)
-  return lines.slice(0, HUD_LINES)
+export function fitToHud(text: string, panel: PanelProfile = STANDIN_OLED): string[] {
+  return cards.answer(text, {panel}).rows
 }
 
 export class Assistant {
   private readonly tools: Map<string, Tool>
   private pending: {tool: Tool; args: string} | null = null
+  private readonly panel: PanelProfile
 
   constructor(private readonly opts: AssistantOptions) {
     this.tools = new Map((opts.tools ?? []).map(t => [t.name, t]))
+    this.panel = opts.panel ?? STANDIN_OLED
+  }
+
+  /**
+   * Show a card, applying the driving policy. A suppressed card means the
+   * panel keeps whatever it had rather than going blank — a blank HUD at speed
+   * reads as a dead device.
+   */
+  private async present(card: cards.Card): Promise<void> {
+    const shown = cards.gate(card, this.opts.driving?.() ?? false)
+    if (shown) await this.opts.hud.show(shown.rows)
   }
 
   /**
@@ -107,7 +100,8 @@ export class Assistant {
         text: stripNotePrefix(text),
         source: {turnId: `t${this.opts.clock.now()}`, turnAt: this.opts.clock.now(), utterance: text},
       })
-      await this.say("Noted.")
+      await this.present(cards.noted({panel: this.panel}))
+      await this.opts.voice.speak(["Noted."])
       return {intent, answer: "Noted."}
     }
 
@@ -126,7 +120,7 @@ export class Assistant {
     }
 
     const context = await this.buildContext(text)
-    await this.opts.hud.show(["Thinking…"])
+    await this.present(cards.thinking({panel: this.panel}))
 
     try {
       const result = await this.opts.router.complete(context)
@@ -136,7 +130,7 @@ export class Assistant {
       if (err instanceof ModelsUnavailableError) {
         // Say so plainly. Silence reads as a broken device.
         const msg = "Can't reach the assistant right now."
-        await this.opts.hud.show(fitToHud(msg))
+        await this.present(cards.error(msg, {panel: this.panel}))
         return {intent: "question", error: msg}
       }
       throw err
@@ -185,7 +179,7 @@ export class Assistant {
 
     this.pending = {tool, args: text}
     const summary = `${tool.name}: ${text}`
-    await this.opts.hud.show(confirmationCard(summary))
+    await this.present(cards.confirm(summary, {panel: this.panel}))
     return {intent: "action", pendingConfirmation: {tool: tool.name, args: text, summary}}
   }
 
@@ -203,7 +197,7 @@ export class Assistant {
   }
 
   private async say(text: string): Promise<void> {
-    await this.opts.hud.show(fitToHud(text))
+    await this.present(cards.answer(text, {panel: this.panel}))
     await this.opts.voice.speak(splitSentences(text))
   }
 

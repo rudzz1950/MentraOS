@@ -1,0 +1,471 @@
+// Protocol v1 — DRAFT, not yet generated or shipped.
+//
+// v0 (proto/mentraos_ble.proto) is what firmware and phone speak today and must
+// keep matching the committed generated sources. This file is v0 plus the
+// additions below; it becomes the contract when the generated Kotlin, Swift and
+// nanopb sources are regenerated from it and committed.
+//
+// Verified additive by scripts/check-proto-compat.py, which parses real messages
+// both ways rather than taking protobuf's word for it.
+//
+// WHEN THIS SHIPS, IT IS THE CONTRACT. Kotlin, Swift and nanopb sources are generated from
+// it; see scripts/check-proto-codegen.sh, which CI runs. The schema was once
+// recovered by decompiling a generated Java file. Never again.
+//
+// Compatibility rule: every v1 addition takes a NEW field number. Nothing is
+// renumbered, nothing is removed, so v0 firmware and a v1 phone interoperate —
+// each ignores fields it does not know. v0 payload numbers end at 66
+// (PhoneToGlasses) and 42 (GlassesToPhone); v1 starts at 70 and 50.
+syntax = "proto3";
+
+package mentraos.ble;
+
+
+enum CanvasComponentType {
+  CANVAS_BITMAP = 0;
+  CANVAS_TEXTBOX = 1;
+  CANVAS_SCROLL_TEXTBOX = 2;
+}
+
+message PhoneToGlasses {
+  string msg_id = 1;
+  oneof payload {
+    DisconnectRequest disconnect = 10;
+    BatteryStateRequest battery_state = 11;
+    GlassesInfoRequest glasses_info = 12;
+    PairingModeRequest pairing_mode = 13;
+    HeadPositionRequest head_position = 14;
+    HeadUpAngleConfig head_up_angle = 15;
+    MicStateConfig mic_state = 20;
+    VadEnabledConfig vad_enabled = 21;
+    VadConfig vad_config = 22;
+    DisplayText display_text = 30;
+    DisplayImage display_image = 31;
+    PreloadImage preload_image = 32;
+    DisplayCachedImage display_cached_image = 33;
+    ClearCachedImage clear_cached_image = 34;
+    DisplayScrollingText display_scrolling_text = 35;
+    DisplayPowerConfig display_power = 36;
+    BrightnessConfig brightness = 37;
+    AutoBrightnessConfig auto_brightness = 38;
+    AutoBrightnessMultiplier auto_brightness_mult = 39;
+    DrawLine draw_line = 40;
+    DrawRect draw_rect = 41;
+    DrawCircle draw_circle = 42;
+    CommitDisplay commit = 43;
+    DisplayDistanceConfig display_distance = 44;
+    DisplayHeightConfig display_height = 45;
+    ClearDisplay clear_display = 46;
+    ImuEnabledConfig imu_enabled = 50;
+    ImuSingleRequest imu_single = 51;
+    ImuStreamConfig imu_stream = 52;
+    HeadGestureConfig head_gesture = 53;
+    RestartRequest restart = 60;
+    FactoryResetRequest factory_reset = 61;
+    CanvasCreateComponent canvas_create_component = 62;
+    CanvasUpdateText canvas_update_text = 63;
+    CanvasUpdateImage canvas_update_image = 64;
+    CanvasDeleteComponent canvas_delete_component = 65;
+    CanvasClear canvas_clear = 66;
+
+    // v1.
+    SetHomeScreen set_home_screen = 70;
+    SyncClock sync_clock = 71;
+  }
+}
+
+message GlassesToPhone {
+  oneof payload {
+    BatteryStatus battery_status = 10;
+    ChargingState charging_state = 11;
+    DeviceInfo device_info = 12;
+    HeadPosition head_position = 13;
+    HeadUpAngleResponse head_up_angle_set = 14;
+    VadEvent vad_event = 20;
+    ImageTransferComplete image_transfer_complete = 30;
+    CanvasResult canvas_result = 31;
+    ImuData imu_data = 40;
+    ButtonEvent button_event = 41;
+    HeadGesture head_gesture = 42;
+
+    // v1.
+    CommandResult command_result = 50;
+  }
+}
+
+message DisconnectRequest {
+}
+
+message BatteryStateRequest {
+}
+
+message BatteryStatus {
+  uint32 level = 1;
+  bool charging = 2;
+}
+
+message ChargingState {
+  enum State {
+    NOT_CHARGING = 0;
+    CHARGING = 1;
+  }
+  ChargingState.State state = 1;
+}
+
+message GlassesInfoRequest {
+}
+
+message DeviceInfo {
+  string fw_version = 1;
+  string hw_model = 2;
+  DeviceFeatures features = 3;
+
+  // v1. Absent on v0 firmware, which is why the phone must keep a fallback:
+  // treat an unset display as "use the capability profile as before".
+  DisplayProfile display = 4;
+}
+
+// v1. What the panel actually is, reported by the device that owns it, so the
+// phone stops holding a second copy of the geometry that can drift out of step.
+message DisplayProfile {
+  uint32 width = 1;             // px
+  uint32 height = 2;            // px
+  uint32 intensity_levels = 3;  // 2 = 1-bit, 16 = 4-bit grey
+  uint32 max_image_width = 4;
+  uint32 max_image_height = 5;
+  repeated string encodings = 6;          // e.g. "raw", "rle_1bit", "rle_4bit"
+  uint32 max_addressable_elements = 7;    // retained draw elements the firmware holds
+}
+
+message DeviceFeatures {
+  bool camera = 1;
+  bool display = 2;
+  bool audio_tx = 3;
+  bool audio_rx = 4;
+  bool imu = 5;
+  bool vad = 6;
+  bool mic_switching = 7;
+  uint32 image_chunk_buffer = 8;
+}
+
+message PairingModeRequest {
+}
+
+message HeadPositionRequest {
+}
+
+message HeadPosition {
+  int32 angle = 1;
+}
+
+message HeadUpAngleConfig {
+  uint32 angle = 1;
+}
+
+message HeadUpAngleResponse {
+  bool success = 1;
+}
+
+message MicStateConfig {
+  bool enabled = 1;
+}
+
+message VadEnabledConfig {
+  bool enabled = 1;
+}
+
+message VadConfig {
+  uint32 sensitivity = 1;
+}
+
+message VadEvent {
+  enum State {
+    INACTIVE = 0;
+    ACTIVE = 1;
+  }
+  VadEvent.State state = 1;
+}
+
+message DisplayText {
+  string text = 1;
+  uint32 color = 2;
+  uint32 font_code = 3;
+  uint32 x = 4;
+  uint32 y = 5;
+  uint32 size = 6;
+}
+
+message DisplayImage {
+  string stream_id = 1;
+  uint32 x = 2;
+  uint32 y = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+  string encoding = 6;
+  uint32 total_chunks = 7;
+}
+
+message PreloadImage {
+  string stream_id = 1;
+  uint32 image_id = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  string encoding = 5;
+  uint32 total_chunks = 6;
+}
+
+message DisplayCachedImage {
+  uint32 image_id = 1;
+  uint32 x = 2;
+  uint32 y = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+}
+
+message ClearCachedImage {
+  uint32 image_id = 1;
+}
+
+message DisplayScrollingText {
+  enum Alignment {
+    LEFT = 0;
+    CENTER = 1;
+    RIGHT = 2;
+  }
+  string text = 1;
+  uint32 color = 2;
+  uint32 font_code = 3;
+  uint32 x = 4;
+  uint32 y = 5;
+  uint32 width = 6;
+  uint32 height = 7;
+  DisplayScrollingText.Alignment align = 8;
+  uint32 line_spacing = 9;
+  uint32 speed = 10;
+  uint32 size = 11;
+  bool loop = 12;
+  uint32 pause_ms = 13;
+}
+
+message ClearDisplay {
+}
+
+message DisplayPowerConfig {
+  bool on = 1;
+}
+
+message BrightnessConfig {
+  uint32 value = 1;
+}
+
+message AutoBrightnessConfig {
+  bool enabled = 1;
+}
+
+message AutoBrightnessMultiplier {
+  float multiplier = 1;
+}
+
+message DrawLine {
+  uint32 color = 1;
+  uint32 stroke = 2;
+  uint32 x1 = 3;
+  uint32 y1 = 4;
+  uint32 x2 = 5;
+  uint32 y2 = 6;
+}
+
+message DrawRect {
+  uint32 color = 1;
+  uint32 stroke = 2;
+  uint32 x = 3;
+  uint32 y = 4;
+  uint32 width = 5;
+  uint32 height = 6;
+}
+
+message DrawCircle {
+  uint32 color = 1;
+  uint32 stroke = 2;
+  uint32 x = 3;
+  uint32 y = 4;
+  uint32 radius = 5;
+}
+
+message CommitDisplay {
+}
+
+message DisplayDistanceConfig {
+  uint32 distance_cm = 1;
+}
+
+message DisplayHeightConfig {
+  uint32 height = 1;
+}
+
+message ImageTransferComplete {
+  enum Status {
+    OK = 0;
+    INCOMPLETE = 1;
+  }
+  string stream_id = 1;
+  ImageTransferComplete.Status status = 2;
+  repeated uint32 missing_chunks = 3;
+}
+
+message CanvasCreateComponent {
+  uint32 id = 1;
+  CanvasComponentType type = 2;
+  uint32 x = 3;
+  uint32 y = 4;
+  uint32 width = 5;
+  uint32 height = 6;
+  uint32 border_width = 7;
+  uint32 border_radius = 8;
+  uint32 padding = 9;
+}
+
+message CanvasUpdateText {
+  uint32 id = 1;
+  string text = 2;
+  uint32 scroll_offset = 3;
+}
+
+message CanvasUpdateImage {
+  uint32 id = 1;
+  string stream_id = 2;
+  uint32 total_chunks = 3;
+}
+
+message CanvasDeleteComponent {
+  uint32 id = 1;
+}
+
+message CanvasClear {
+}
+
+message CanvasResult {
+  enum ResultCode {
+    OK = 0;
+    INVALID = 1;
+    OVERSIZE = 2;
+    OOM = 3;
+  }
+  uint32 id = 1;
+  CanvasResult.ResultCode code = 2;
+}
+
+message ImuEnabledConfig {
+  bool enabled = 1;
+}
+
+message ImuSingleRequest {
+}
+
+message ImuStreamConfig {
+  bool enabled = 1;
+}
+
+message ImuData {
+  Vector3 accel = 1;
+  Vector3 gyro = 2;
+  Vector3 mag = 3;
+}
+
+message Vector3 {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+}
+
+message ButtonEvent {
+  enum Button {
+    CENTER = 0;
+    LEFT = 1;
+    RIGHT = 2;
+  }
+  enum State {
+    UP = 0;
+    DOWN = 1;
+  }
+  ButtonEvent.Button button = 1;
+  ButtonEvent.State state = 2;
+}
+
+message HeadGesture {
+  enum Gesture {
+    NOD = 0;
+    SHAKE = 1;
+    HEAD_UP = 2;
+  }
+  HeadGesture.Gesture gesture = 1;
+}
+
+message HeadGestureConfig {
+  HeadGesture.Gesture gesture = 1;
+  bool enabled = 2;
+}
+
+message RestartRequest {
+}
+
+message FactoryResetRequest {
+}
+
+
+// ---- v1 messages ----------------------------------------------------------
+
+// Acknowledges a state-changing command. High-frequency fire-and-forget draws
+// stay unacknowledged; what matters is knowing that a commit, a stored home
+// screen or an asset upload actually landed.
+message CommandResult {
+  enum Status {
+    OK = 0;
+    FAIL = 1;
+    UNSUPPORTED = 2;   // this firmware does not implement the command
+    BAD_PARAM = 3;
+    BUSY = 4;          // transient; the phone may retry
+    NO_MEMORY = 5;
+  }
+  string msg_id = 1;   // echoes the PhoneToGlasses.msg_id being answered
+  Status status = 2;
+  string detail = 3;   // optional, human-readable, failures only
+}
+
+// The one screen the glasses render on their own, so a momentary link drop is
+// invisible to the wearer. Stored in flash and re-rendered on wake while
+// disconnected. To change it, upload it again.
+message SetHomeScreen {
+  repeated DrawOp ops = 1;   // painted in order; later ops paint over earlier
+}
+
+// One draw operation. The live display takes these as individual commands; the
+// home screen stores a list of them.
+message DrawOp {
+  oneof op {
+    DisplayText text = 1;
+    DrawLine line = 2;
+    DrawRect rect = 3;
+    DrawCircle circle = 4;
+    DisplayImage image = 5;
+  }
+  // Only honoured inside a stored home screen. The firmware fills these from its
+  // own state while disconnected, because only it knows them.
+  enum Field {
+    NONE = 0;
+    TIME = 1;
+    DATE = 2;
+    BATTERY = 3;
+    LINK_STATUS = 4;
+  }
+  Field field = 10;
+}
+
+// The firmware ticks TIME and DATE from its own clock, so it stays right while
+// disconnected. The phone syncs on connect and periodically, for drift and for
+// timezone changes.
+message SyncClock {
+  uint64 epoch_ms = 1;
+  int32 utc_offset_minutes = 2;
+  bool format_24h = 3;   // a user setting, pushed here; the firmware has no menu
+}

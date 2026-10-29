@@ -51,8 +51,13 @@ export interface MemoryServiceOptions {
   blobs?: BlobStore
   provider?: EmbeddingProvider
   /**
-   * Consent. False keeps every memory local and search falls back to keywords.
-   * The provider is never called while this is false.
+   * Consent to send memory text to an embedding provider.
+   *
+   * Leave it undefined and it is OFF, and `embeddingConsent` reports "unasked"
+   * so the host knows to put the question to the user. Do not default it on:
+   * embedding is not necessary to provide the service, the provider is usually
+   * outside India, and DPDP consent has to be a clear affirmative act rather
+   * than a pre-set switch. Search still works meanwhile, on keywords.
    */
   embeddingsEnabled?: boolean
   /** Injected so tests are deterministic. */
@@ -60,12 +65,17 @@ export interface MemoryServiceOptions {
   idgen?: () => string
 }
 
+/** Whether the user has been asked about embedding, and what they said. */
+export type EmbeddingConsent = "unasked" | "granted" | "denied"
+
 export interface MemoryStats {
   total: number
   embedded: number
   queued: number
   vectorStatus: VectorLoadStatus | "unloaded"
   embeddingsEnabled: boolean
+  /** "unasked" means the host still owes the user the question. */
+  embeddingConsent: EmbeddingConsent
 }
 
 /**
@@ -91,6 +101,7 @@ export class MemoryService implements MemoryStore {
   private readonly idgen: () => string
 
   private embeddingsEnabled: boolean
+  private consentAsked: boolean
   private rows = new Map<string, Memory>()
   private slotOf = new Map<string, number>()
   private vectors: VectorSet
@@ -102,7 +113,9 @@ export class MemoryService implements MemoryStore {
     this.storage = opts.storage ?? new MemoryKeyValueStore()
     this.blobs = opts.blobs ?? new MemoryBlobStore()
     this.provider = opts.provider ?? new FakeEmbeddingProvider()
-    this.embeddingsEnabled = opts.embeddingsEnabled ?? true
+    // Off until someone says otherwise. See MemoryServiceOptions.
+    this.embeddingsEnabled = opts.embeddingsEnabled ?? false
+    this.consentAsked = opts.embeddingsEnabled !== undefined
     this.now = opts.now ?? (() => Date.now())
     let n = 0
     this.idgen = opts.idgen ?? (() => `m${(++n).toString(36)}${this.now().toString(36)}`)
@@ -151,8 +164,15 @@ export class MemoryService implements MemoryStore {
     this.loaded = true
   }
 
+  /** Record the user's answer. Calling this at all counts as having asked. */
   setEmbeddingsEnabled(on: boolean) {
     this.embeddingsEnabled = on
+    this.consentAsked = true
+  }
+
+  embeddingConsent(): EmbeddingConsent {
+    if (!this.consentAsked) return "unasked"
+    return this.embeddingsEnabled ? "granted" : "denied"
   }
 
   async add(input: MemoryInput): Promise<Memory> {
@@ -326,6 +346,7 @@ export class MemoryService implements MemoryStore {
       queued: all.filter(m => !m.embedded).length,
       vectorStatus: this.vectorStatus,
       embeddingsEnabled: this.embeddingsEnabled,
+      embeddingConsent: this.embeddingConsent(),
     }
   }
 

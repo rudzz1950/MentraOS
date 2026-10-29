@@ -31,6 +31,10 @@ function service(opts: Partial<ConstructorParameters<typeof MemoryService>[0]> =
     provider: provider(),
     now: () => (t += 1000),
     idgen: () => `m${++n}`,
+    // Consent is off until asked, so the tests that exercise the embedding
+    // path grant it. Passing it explicitly keeps that visible rather than
+    // relying on a default that deliberately is not on.
+    embeddingsEnabled: true,
     ...opts,
   })
 }
@@ -264,10 +268,65 @@ describe("the vector blob is a cache, not data", () => {
       blobs,
       provider: new FakeEmbeddingProvider(32),
       now: () => T0,
+      embeddingsEnabled: true,
     })
     const s = await other.stats()
     expect(s.total).toBe(1)
     expect(s.vectorStatus).toBe("model_changed")
     expect(s.queued).toBe(1)
+  })
+})
+
+describe("embedding consent", () => {
+  test("is off until asked, and search still works meanwhile", async () => {
+    const p = provider()
+    // No embeddingsEnabled passed at all: the host has not put the question yet.
+    const m = new MemoryService({
+      storage: new MemoryKeyValueStore(),
+      blobs: new MemoryBlobStore(),
+      provider: p,
+      now: () => T0,
+      idgen: (() => {
+        let n = 0
+        return () => `m${++n}`
+      })(),
+    })
+    await m.add(stated("Sent the deck to the investors"))
+
+    const s = await m.stats()
+    expect(s.embeddingConsent).toBe("unasked")
+    expect(s.embeddingsEnabled).toBe(false)
+    expect(p.callCount).toBe(0)
+
+    // Degraded, not broken.
+    const hits = await m.search("deck", 3)
+    expect(hits[0].memory.text).toContain("deck")
+  })
+
+  test("granting it embeds what was queued while undecided", async () => {
+    const p = provider()
+    const m = service({provider: p, embeddingsEnabled: undefined})
+    await m.add(stated("Sent the deck to the investors"))
+    expect((await m.stats()).queued).toBe(1)
+
+    m.setEmbeddingsEnabled(true)
+    expect(await m.flushQueue()).toBe(1)
+
+    const s = await m.stats()
+    expect(s.embeddingConsent).toBe("granted")
+    expect(s.queued).toBe(0)
+    const hits = await m.search("how did the pitch go", 3)
+    expect(hits[0].breakdown.semantic).toBeGreaterThan(0)
+  })
+
+  test("declining is recorded as a decision, not as an unanswered question", async () => {
+    const p = provider()
+    const m = service({provider: p, embeddingsEnabled: undefined})
+    m.setEmbeddingsEnabled(false)
+    await m.add(stated("Sent the deck to the investors"))
+
+    const s = await m.stats()
+    expect(s.embeddingConsent).toBe("denied")
+    expect(p.callCount).toBe(0)
   })
 })

@@ -31,7 +31,7 @@ describe("Custom Glasses capabilities", () => {
       maxTextLines: 4,
     })
     expect(customGlasses.hasMicrophone).toBe(true)
-    expect(customGlasses.microphone).toEqual({count: 1, hasVAD: false})
+    expect(customGlasses.microphone).toEqual({count: 1, hasVAD: true})
     expect(customGlasses.hasCamera).toBe(false)
     expect(customGlasses.camera).toBeNull()
     expect(customGlasses.hasSpeaker).toBe(false)

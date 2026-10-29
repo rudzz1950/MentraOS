@@ -48,9 +48,10 @@ export function createCustomGlassesCapabilities(
     hasDisplay: true,
     display: displayFor(preset),
 
-    // One PDM mic on the dev board; VAD runs on the phone in Sprint 1.
+    // One PDM mic on the dev board. The firmware runs voice activity detection
+    // itself and gates the stream on it, so the radio stays quiet in silence.
     hasMicrophone: true,
-    microphone: {count: 1, hasVAD: false},
+    microphone: {count: 1, hasVAD: true},
 
     hasSpeaker: false,
     speaker: null,

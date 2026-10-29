@@ -491,3 +491,144 @@ describe("driving, in the loop", () => {
     expect(hud.shown.length).toBeGreaterThan(0)
   })
 })
+
+describe("timers never reach a model", () => {
+  test("setting one is answered on-device", async () => {
+    const {assistant, models} = build()
+    const r = await assistant.handle("set a timer for 10 minutes", true)
+    expect(r.via).toBe("timers")
+    expect(r.answer).toContain("10 minutes")
+    // The whole point: no network was touched.
+    expect((models[0] as any).calls.length).toBe(0)
+  })
+
+  test("so does asking how long is left", async () => {
+    const {assistant, models} = build()
+    await assistant.handle("set a timer for 10 minutes", true)
+    const r = await assistant.handle("how long is left", true)
+    expect(r.via).toBe("timers")
+    expect((models[0] as any).calls.length).toBe(0)
+  })
+
+  test("the timer is actually registered, not just acknowledged", async () => {
+    const {assistant} = build()
+    await assistant.handle("set a timer for 10 minutes", true)
+    expect(assistant.timerStore.active().length).toBe(1)
+  })
+
+  test("a real question still goes to the model", async () => {
+    const {assistant, models} = build()
+    const r = await assistant.handle("what is the capital of Karnataka", true)
+    expect(r.via).not.toBe("timers")
+    expect((models[0] as any).calls.length).toBe(1)
+  })
+
+  test("an incomplete timer asks rather than setting a guessed one", async () => {
+    const {assistant} = build()
+    const r = await assistant.handle("set a timer", true)
+    expect(r.answer).toContain("How long")
+    expect(assistant.timerStore.active().length).toBe(0)
+  })
+
+  test("overheard speech still cannot set a timer", async () => {
+    const {assistant} = build()
+    const r = await assistant.handle("set a timer for 10 minutes", false)
+    expect(r.ignored).toBe(true)
+    expect(assistant.timerStore.active().length).toBe(0)
+  })
+
+  test("a note about a timer is still a note", async () => {
+    const {assistant, mem} = build()
+    const r = await assistant.handle("remember that the pasta timer is 8 minutes", true)
+    expect(r.intent).toBe("note")
+    expect(assistant.timerStore.active().length).toBe(0)
+    expect((await mem.list()).length).toBe(1)
+  })
+})
+
+describe("conversation history", () => {
+  test("a follow-up has the previous exchange to refer to", async () => {
+    const {assistant, models} = build()
+    await assistant.handle("what is the weather in Bengaluru", true)
+    await assistant.handle("what about tomorrow", true)
+
+    const second = (models[0] as any).calls[1] as string
+    expect(second).toContain("Recent conversation")
+    expect(second).toContain("weather in Bengaluru")
+  })
+
+  test("the first question has no history, so no empty section", async () => {
+    const {assistant, models} = build()
+    await assistant.handle("what is the weather", true)
+    expect((models[0] as any).calls[0]).not.toContain("Recent conversation")
+  })
+
+  test("it is bounded rather than growing all session", async () => {
+    const {assistant} = build()
+    for (let i = 0; i < 8; i++) {
+      await assistant.handle(`question number ${i}`, true)
+    }
+    expect(assistant.historyLength).toBe(3)
+  })
+
+  test("it can be dropped when the wearer walks away", async () => {
+    const {assistant} = build()
+    await assistant.handle("what is the weather", true)
+    expect(assistant.historyLength).toBe(1)
+    assistant.clearHistory()
+    expect(assistant.historyLength).toBe(0)
+  })
+
+  test("a failure is not recorded as an answer", async () => {
+    // Otherwise the model would treat "can't reach the assistant" as a fact
+    // about the world on the next turn.
+    const dead = new FakeModel("dead", () => {
+      throw new Error("offline")
+    })
+    const {assistant} = build({model: dead})
+    const r = await assistant.handle("what is the weather", true)
+    expect(r.error).toBeDefined()
+    expect(assistant.historyLength).toBe(0)
+  })
+
+  test("a timer is not put in the model's context either", async () => {
+    const {assistant, models} = build()
+    await assistant.handle("set a timer for 5 minutes", true)
+    await assistant.handle("what is the weather", true)
+    expect((models[0] as any).calls[0]).not.toContain("Recent conversation")
+  })
+})
+
+describe("the built-in timer is a default, not a hijack", () => {
+  test("a registered timer tool wins over the built-in", async () => {
+    const calls: string[] = []
+    const tool: Tool = {
+      name: "timer",
+      consequential: false,
+      run: async a => {
+        calls.push(a)
+        return "Set on the phone's clock."
+      },
+    }
+    const {assistant} = build({tools: [tool]})
+    const r = await assistant.handle("set a timer for ten minutes", true)
+    expect(calls.length).toBe(1)
+    expect(r.via).toBe("tool:timer")
+    // The on-device store stayed out of it.
+    expect(assistant.timerStore.active().length).toBe(0)
+  })
+
+  test("and the built-in is used when no such tool exists", async () => {
+    const {assistant} = build()
+    const r = await assistant.handle("set a timer for ten minutes", true)
+    expect(r.via).toBe("timers")
+    expect(assistant.timerStore.active().length).toBe(1)
+  })
+
+  test("an unrelated tool does not block the built-in", async () => {
+    const tool: Tool = {name: "message", consequential: true, run: async () => "Sent."}
+    const {assistant} = build({tools: [tool]})
+    const r = await assistant.handle("set a timer for ten minutes", true)
+    expect(r.via).toBe("timers")
+  })
+})

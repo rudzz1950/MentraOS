@@ -11,9 +11,11 @@ import type {MemoryStore} from "../memory/memory"
 import type {Memory} from "../memory/types"
 import * as cards from "../hud/cards"
 import {STANDIN_OLED, type PanelProfile} from "../hud/panel"
+import {Addressing} from "./addressing"
 import {BargeIn, OutboundLimit} from "./bargein"
 import {CancelledError, ModelRouter, ModelsUnavailableError, rulesAnswer} from "./model"
 import {classify, type Intent} from "./router"
+import {TimerStore} from "./timers"
 import type {Clock, Hud, Tool, TranscriptSource, Voice} from "./ports"
 
 export interface TurnResult {
@@ -48,6 +50,15 @@ export interface AssistantOptions {
   bargeIn?: BargeIn
   /** Outbound rate limit. Omitted means five per ten minutes. */
   outbound?: OutboundLimit
+  /** Timers and alarms, answered on-device. Omitted means one is created. */
+  timers?: TimerStore
+  /**
+   * How many previous exchanges to put in front of the model, so a follow-up
+   * like "what about tomorrow" has something to refer to. Zero disables it.
+   */
+  historyTurns?: number
+  /** Opens and closes the floor. Omitted means `handle` is told directly. */
+  addressing?: Addressing
 }
 
 /**
@@ -68,6 +79,9 @@ export class Assistant {
   private pending: {tool: Tool; args: string} | null = null
   private readonly panel: PanelProfile
   private readonly outbound: OutboundLimit
+  private readonly timers: TimerStore
+  /** Recent exchanges, oldest first. Capped; see historyTurns. */
+  private history: {question: string; answer: string}[] = []
   /** Cancels the model and the voice for the turn in flight. */
   private inflight: AbortController | null = null
   private reconfirming = false
@@ -76,6 +90,27 @@ export class Assistant {
     this.tools = new Map((opts.tools ?? []).map(t => [t.name, t]))
     this.panel = opts.panel ?? STANDIN_OLED
     this.outbound = opts.outbound ?? new OutboundLimit(opts.clock)
+    this.timers = opts.timers ?? new TimerStore(opts.clock)
+  }
+
+  /**
+   * True when a registered tool names itself in this utterance.
+   *
+   * The built-in timer store is a DEFAULT, not a hijack. A host that registers
+   * a tool called "timer" or "alarm" meant it to be used — probably because it
+   * integrates with the phone's own clock app — and silently shadowing it would
+   * be the kind of surprise that takes an afternoon to find. Registering such a
+   * tool is how a caller opts out of the on-device path, at the cost of its
+   * offline behaviour.
+   */
+  private toolClaims(text: string): boolean {
+    const lower = text.toLowerCase()
+    return [...this.tools.values()].some(t => lower.includes(t.name.toLowerCase()))
+  }
+
+  /** The on-device timer store, for the caller that fires them. */
+  get timerStore(): TimerStore {
+    return this.timers
   }
 
   /**
@@ -116,6 +151,28 @@ export class Assistant {
       return {intent, ignored: true}
     }
 
+    /*
+     * Timers and alarms are handled here, after the addressed check and before
+     * the intent dispatch.
+     *
+     * They had to move. "set a timer for ten minutes" opens with an action
+     * verb, so the router classifies it as an action — correctly — and it never
+     * reached a check living in the question path. It then fell through to "I
+     * can't do that yet", which is the single most common thing anyone asks a
+     * wearable.
+     *
+     * It must stay AFTER the not_for_me check, though: someone else in the room
+     * saying "set a timer for the pasta" must not set one. And before the note
+     * check, so "remember that..." is still a note.
+     */
+    if (intent !== "note" && !this.toolClaims(text)) {
+      const timed = this.timers.handle(text)
+      if (timed !== null) {
+        await this.say(timed)
+        return {intent, answer: timed, via: "timers"}
+      }
+    }
+
     if (intent === "note") {
       await this.opts.memory.add({
         class: "episodic",
@@ -148,6 +205,7 @@ export class Assistant {
     this.inflight = ctrl
     try {
       const result = await this.opts.router.complete(context, {signal: ctrl.signal})
+      this.remember(text, result.text)
       await this.say(result.text)
       return {intent: "question", answer: result.text, via: result.via}
     } catch (err) {
@@ -184,6 +242,16 @@ export class Assistant {
     }
     if (hits.length) {
       parts.push("Relevant memories:\n" + hits.map(h => bullet(h.memory)).join("\n"))
+    }
+    // Recent exchanges, so "what about tomorrow" has an antecedent. Without
+    // these every utterance was a cold start and no follow-up could resolve.
+    const keep = this.opts.historyTurns ?? 3
+    if (keep > 0 && this.history.length) {
+      const recent = this.history.slice(-keep)
+      parts.push(
+        "Recent conversation:\n" +
+          recent.map(h => `- Asked: ${h.question}\n  Answered: ${h.answer}`).join("\n"),
+      )
     }
     parts.push(`Question: ${text}`)
     return parts.join("\n\n")
@@ -242,6 +310,28 @@ export class Assistant {
   private async say(text: string): Promise<void> {
     await this.present(cards.answer(text, {panel: this.panel}))
     await this.opts.voice.speak(splitSentences(text))
+  }
+
+  /**
+   * Keep the exchange for the next turn's context. Only successful answers:
+   * recording an error as an answer would have the model treat "can't reach
+   * the assistant" as a fact about the world.
+   */
+  private remember(question: string, answer: string): void {
+    const keep = this.opts.historyTurns ?? 3
+    if (keep <= 0) return
+    this.history.push({question, answer})
+    // Bounded: a wearable conversation is short and the panel is two lines.
+    while (this.history.length > keep) this.history.shift()
+  }
+
+  /** Drop the conversation. Call when the wearer walks away or a topic ends. */
+  clearHistory(): void {
+    this.history = []
+  }
+
+  get historyLength(): number {
+    return this.history.length
   }
 
   /** True while a confirmation is outstanding. */

@@ -20,6 +20,13 @@ import {FakeEmbeddingProvider, type EmbeddingProvider, normalize, tokenize} from
 import {EmbeddingUnavailableError} from "./embeddings"
 import {MemoryBlobStore, MemoryKeyValueStore, type BlobStore, type KeyValueStore} from "./ports"
 import {combine, exactScore, keywordScore, memoryTokens, recencyScore} from "./scoring"
+import {
+  type ConsolidationPlan,
+  type DuplicateGroup,
+  mergeable,
+  mergeInto,
+  planConsolidation,
+} from "./consolidate"
 import {detectSensitive, SensitiveInferenceError} from "./sensitive"
 
 /**
@@ -353,6 +360,81 @@ export class MemoryService implements MemoryStore {
     }
     if (ids.length) await this.persistIndex()
     return {scopeId, deleted: ids.length, ids}
+  }
+
+  /**
+   * Delete everything that has expired, and say what went.
+   *
+   * Expiry was honoured on the read path — expired rows were filtered out of
+   * `list` and `search` — but nothing ever removed them, so they sat in
+   * storage indefinitely. A retention promise enforced only at read time is
+   * not a retention promise: the data is still there, still in a backup, and
+   * still answerable to a subject-access request.
+   *
+   * Pinned memories never expire and are never collected, which is what
+   * pinning means.
+   */
+  async collect(): Promise<{deleted: number; ids: string[]}> {
+    await this.load()
+    const now = this.now()
+    const ids = [...this.rows.values()]
+      .filter(m => !m.pinned && m.expiresAt !== undefined && m.expiresAt <= now)
+      .map(m => m.id)
+
+    for (const id of ids) {
+      this.rows.delete(id)
+      this.dropVector(id)
+      await this.storage.delete(KEY_PREFIX + id)
+    }
+    if (ids.length) await this.persistIndex()
+    return {deleted: ids.length, ids}
+  }
+
+  /**
+   * Analyse the store for duplicates, changes of mind and promotable facts.
+   * Read-only: this writes nothing, so a caller can show it before acting.
+   */
+  async consolidationPlan(): Promise<ConsolidationPlan> {
+    const live = await this.list()
+    return planConsolidation(live)
+  }
+
+  /**
+   * Apply the duplicate merges from a plan.
+   *
+   * Only the merges. Contradictions and promotions are left alone: a
+   * contradiction needs the wearer to say which answer stands, and a promotion
+   * is an inference this store refuses to hold without approval.
+   */
+  async applyDedupe(groups: DuplicateGroup[]): Promise<{merged: number; removed: number}> {
+    await this.load()
+    let merged = 0
+    let removed = 0
+
+    for (const group of groups) {
+      // Re-check: the plan may have been built before another write landed,
+      // and merging across a consent scope must be impossible even by
+      // accident.
+      if (!group.merge.every(m => mergeable(group.keep, m))) continue
+      if (!this.rows.has(group.keep.id)) continue
+
+      const survivor = mergeInto(group)
+      this.rows.set(survivor.id, survivor)
+      await this.storage.set(KEY_PREFIX + survivor.id, JSON.stringify(survivor))
+      merged++
+
+      for (const victim of group.merge) {
+        if (!this.rows.delete(victim.id)) continue
+        this.dropVector(victim.id)
+        await this.storage.delete(KEY_PREFIX + victim.id)
+        removed++
+      }
+      // The survivor's text may have changed, so its vector is stale.
+      this.dropVector(survivor.id)
+    }
+
+    if (merged || removed) await this.persistIndex()
+    return {merged, removed}
   }
 
   /** The scopes this store currently holds anything for. */

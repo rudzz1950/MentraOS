@@ -11,7 +11,8 @@ import type {MemoryStore} from "../memory/memory"
 import type {Memory} from "../memory/types"
 import * as cards from "../hud/cards"
 import {STANDIN_OLED, type PanelProfile} from "../hud/panel"
-import {ModelRouter, ModelsUnavailableError, rulesAnswer} from "./model"
+import {BargeIn, OutboundLimit} from "./bargein"
+import {CancelledError, ModelRouter, ModelsUnavailableError, rulesAnswer} from "./model"
 import {classify, type Intent} from "./router"
 import type {Clock, Hud, Tool, TranscriptSource, Voice} from "./ports"
 
@@ -24,6 +25,8 @@ export interface TurnResult {
   pendingConfirmation?: {tool: string; args: string; summary: string}
   /** True when the turn deliberately did nothing. */
   ignored?: boolean
+  /** True when the wearer spoke over the assistant and the turn was cut short. */
+  interrupted?: boolean
   error?: string
 }
 
@@ -41,6 +44,10 @@ export interface AssistantOptions {
   panel?: PanelProfile
   /** True while the wearer is driving; see hud/cards.ts for what that changes. */
   driving?: () => boolean
+  /** Barge-in. Omitted means the assistant cannot be spoken over. */
+  bargeIn?: BargeIn
+  /** Outbound rate limit. Omitted means five per ten minutes. */
+  outbound?: OutboundLimit
 }
 
 /**
@@ -60,10 +67,25 @@ export class Assistant {
   private readonly tools: Map<string, Tool>
   private pending: {tool: Tool; args: string} | null = null
   private readonly panel: PanelProfile
+  private readonly outbound: OutboundLimit
+  /** Cancels the model and the voice for the turn in flight. */
+  private inflight: AbortController | null = null
+  private reconfirming = false
 
   constructor(private readonly opts: AssistantOptions) {
     this.tools = new Map((opts.tools ?? []).map(t => [t.name, t]))
     this.panel = opts.panel ?? STANDIN_OLED
+    this.outbound = opts.outbound ?? new OutboundLimit(opts.clock)
+  }
+
+  /**
+   * Stop talking and cancel whatever is being generated. Called by barge-in;
+   * safe to call when nothing is running.
+   */
+  interrupt(): void {
+    this.inflight?.abort()
+    this.inflight = null
+    void this.opts.voice.stop()
   }
 
   /**
@@ -122,11 +144,18 @@ export class Assistant {
     const context = await this.buildContext(text)
     await this.present(cards.thinking({panel: this.panel}))
 
+    const ctrl = new AbortController()
+    this.inflight = ctrl
     try {
-      const result = await this.opts.router.complete(context)
+      const result = await this.opts.router.complete(context, {signal: ctrl.signal})
       await this.say(result.text)
       return {intent: "question", answer: result.text, via: result.via}
     } catch (err) {
+      // Cancellation is the wearer speaking over the assistant. Nothing is
+      // retried and nothing is shown: they are already talking.
+      if (err instanceof CancelledError) {
+        return {intent: "question", interrupted: true}
+      }
       if (err instanceof ModelsUnavailableError) {
         // Say so plainly. Silence reads as a broken device.
         const msg = "Can't reach the assistant right now."
@@ -134,6 +163,8 @@ export class Assistant {
         return {intent: "question", error: msg}
       }
       throw err
+    } finally {
+      if (this.inflight === ctrl) this.inflight = null
     }
   }
 
@@ -177,8 +208,13 @@ export class Assistant {
       return {intent: "action", answer: out, via: `tool:${tool.name}`}
     }
 
+    // Over the outbound limit the assistant asks a second time rather than
+    // refusing: the wearer may legitimately have six things to send, and the
+    // runaway case is what the second ask catches.
+    const verdict = this.outbound.check()
+    this.reconfirming = verdict.reconfirm
     this.pending = {tool, args: text}
-    const summary = `${tool.name}: ${text}`
+    const summary = verdict.reconfirm ? `Again? ${tool.name}: ${text}` : `${tool.name}: ${text}`
     await this.present(cards.confirm(summary, {panel: this.panel}))
     return {intent: "action", pendingConfirmation: {tool: tool.name, args: text, summary}}
   }
@@ -186,11 +222,18 @@ export class Assistant {
   private async resolveConfirmation(reply: string): Promise<TurnResult> {
     const p = this.pending!
     this.pending = null
-    const yes = /^(yes|yeah|yep|send|confirm|do it|go ahead|ok|okay)\b/i.test(reply.trim())
+    const wasReconfirming = this.reconfirming
+    this.reconfirming = false
+    // A second ask takes an explicit word. "ok" is what someone says while
+    // thinking, and it should not be what sends the sixth message.
+    const yes = wasReconfirming
+      ? /^(yes|send|confirm)\b/i.test(reply.trim())
+      : /^(yes|yeah|yep|send|confirm|do it|go ahead|ok|okay)\b/i.test(reply.trim())
     if (!yes) {
       await this.say("Cancelled.")
       return {intent: "action", answer: "Cancelled."}
     }
+    if (p.tool.consequential) this.outbound.record()
     const out = await p.tool.run(p.args)
     await this.say(out)
     return {intent: "action", answer: out, via: `tool:${p.tool.name}`}
@@ -204,6 +247,16 @@ export class Assistant {
   /** True while a confirmation is outstanding. */
   get awaitingConfirmation(): boolean {
     return this.pending !== null
+  }
+
+  /** True when the outstanding confirmation is a second ask past the limit. */
+  get awaitingReconfirmation(): boolean {
+    return this.pending !== null && this.reconfirming
+  }
+
+  /** Outbound actions left before the assistant starts asking twice. */
+  get outboundRemaining(): number {
+    return this.outbound.remaining()
   }
 }
 

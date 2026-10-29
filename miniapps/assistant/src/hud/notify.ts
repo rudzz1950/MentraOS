@@ -32,6 +32,7 @@
  */
 
 import type {Clock} from "../agent/ports"
+import {RollingWindow} from "../util/window"
 
 /** Mirrors the SDK's PhoneNotificationData. */
 export interface PhoneNotification {
@@ -88,11 +89,10 @@ export class NotifyPolicy {
   private readonly clock: Clock
   private priorityApps: Set<string>
   private prioritySenders: string[]
-  private hourlyBudget: number
   private repostWindowMs: number
   private dnd: boolean
-  /** Timestamps of shown interruptions, pruned to the rolling hour. */
-  private shownAt: number[] = []
+  /** Interruptions shown, over the rolling hour. */
+  private readonly budget: RollingWindow
   /** Key -> when it was last shown, for repost suppression. */
   private lastSeen = new Map<string, number>()
 
@@ -100,7 +100,7 @@ export class NotifyPolicy {
     this.clock = opts.clock
     this.priorityApps = new Set(opts.priorityApps ?? [])
     this.prioritySenders = (opts.prioritySenders ?? []).map(s => s.toLowerCase())
-    this.hourlyBudget = opts.hourlyBudget ?? 6
+    this.budget = new RollingWindow(this.clock, opts.hourlyBudget ?? 6, HOUR_MS)
     this.repostWindowMs = opts.repostWindowMs ?? 5 * 60 * 1000
     this.dnd = opts.doNotDisturb ?? false
   }
@@ -115,8 +115,7 @@ export class NotifyPolicy {
 
   /** Interruptions still available this hour. */
   remainingBudget(): number {
-    this.prune()
-    return Math.max(0, this.hourlyBudget - this.shownAt.length)
+    return this.budget.remaining()
   }
 
   /**
@@ -142,12 +141,11 @@ export class NotifyPolicy {
       return {show: false, reason: "repost"}
     }
 
-    this.prune()
-    if (this.shownAt.length >= this.hourlyBudget) {
+    this.pruneSeen()
+    if (!this.budget.tryTake()) {
       return {show: false, reason: "over_budget"}
     }
 
-    this.shownAt.push(now)
     this.lastSeen.set(key, now)
     return {show: true, reason: match}
   }
@@ -170,9 +168,8 @@ export class NotifyPolicy {
     return n.notificationKey ?? `${n.packageName}:${n.notificationId}`
   }
 
-  private prune(): void {
+  private pruneSeen(): void {
     const cutoff = this.clock.now() - HOUR_MS
-    this.shownAt = this.shownAt.filter(t => t > cutoff)
     for (const [key, at] of this.lastSeen) {
       if (at <= cutoff) this.lastSeen.delete(key)
     }

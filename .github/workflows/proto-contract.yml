@@ -1,0 +1,33 @@
+# The .proto is the contract. This proves the committed generated sources still
+# agree with it, and that protocol v1 stays additive against the shipping v0.
+#
+# Runner note: upstream MentraOS uses Blacksmith runners per its AGENTS.md. This
+# fork has no access to those, so it uses a GitHub-hosted runner.
+name: Protocol contract
+
+on:
+  pull_request:
+    paths:
+      - "proto/**"
+      - "mobile/modules/bluetooth-sdk/**/MentraosBle.java"
+      - "mobile/modules/bluetooth-sdk/**/mentraos_ble.pb.swift"
+      - "scripts/check-proto-*.py"
+      - ".github/workflows/proto-contract.yml"
+  push:
+    branches: [myglasses/main]
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # check-proto-compat.py reads the shipping schema from git
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install grpcio-tools protobuf
+      - name: Generated sources match the schema
+        run: python3 scripts/check-proto-codegen.py
+      - name: Protocol v1 is additive and wire-compatible with v0
+        run: python3 scripts/check-proto-compat.py

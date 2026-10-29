@@ -37,6 +37,31 @@ export const MEMORY_CLASSES: readonly MemoryClass[] = [
 /** Classes small and stable enough to load into every prompt. */
 export const ALWAYS_LOADED_CLASSES: readonly MemoryClass[] = ["stable_preference"]
 
+/**
+ * How a memory came to exist. This is not bookkeeping — it decides whether the
+ * memory may be stored at all.
+ *
+ * ADR-002 (Project-K, consent ledger) sets the rule: anything derived from a
+ * CAPTURE carries a consent scope, and a write without one is rejected. The
+ * reason is that completeness of deletion cannot be proven by searching for
+ * leftovers; it is only provable if an untagged write was structurally
+ * impossible. This store accepted anything, which made it exactly the
+ * "general memory store" that ADR forbids.
+ *
+ * The distinction that matters: a wearer dictating a note about their own
+ * work is not a capture of anybody. A summary of what someone else said in
+ * the room is. Scoping the first would be over-applying the rule; failing to
+ * scope the second is the leak.
+ */
+export type MemoryProvenance =
+  /** The wearer said it about themselves or their own work. No scope needed. */
+  | "self_reported"
+  /**
+   * Derived from sensor capture — audio of other people, images, anything the
+   * glasses observed rather than the wearer dictated. MUST carry a scopeId.
+   */
+  | "captured"
+
 /** Where a memory came from. Every memory records this, for the "why did you say that?" view. */
 export interface MemorySource {
   /** Id of the conversation turn that produced it. Required: no anonymous memories. */
@@ -45,6 +70,19 @@ export interface MemorySource {
   turnAt: number
   /** Verbatim user utterance, when the memory was stated rather than derived. */
   utterance?: string
+  /**
+   * Defaults to "self_reported" when absent, because every memory this store
+   * held before this field existed came from the wearer's own dictation. A
+   * default of "captured" would have retro-tagged all of them as needing a
+   * scope they never had.
+   */
+  provenance?: MemoryProvenance
+  /**
+   * The consent scope this memory belongs to. Required when provenance is
+   * "captured"; rejected otherwise, so a scope cannot be attached to a
+   * self-reported note and give a false impression of coverage.
+   */
+  scopeId?: string
 }
 
 export interface Memory {

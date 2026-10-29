@@ -170,15 +170,28 @@ export function call(caller: string, ctx: CardContext): Card {
 /**
  * Message body is dropped while driving — sender only. Reading a sentence at
  * speed is the thing this HUD must not invite.
+ *
+ * `canReply` gates the reply prompt, and it is NOT optional-with-a-true-default
+ * on purpose. The card used to offer "Say reply to answer" unconditionally,
+ * which on an iPhone in India promises something the platform forbids: ANCS is
+ * read-only and interactive forwarding to third-party wearables is EU-only from
+ * iOS 26.5. A HUD that invites an action the system cannot perform reads as
+ * broken rather than limited.
  */
-export function message(sender: string, body: string, ctx: CardContext): Card {
+export function message(
+  sender: string,
+  body: string,
+  ctx: CardContext,
+  opts: {canReply?: boolean} = {},
+): Card {
+  const lines: CardLine[] = [
+    {text: sender, fit: "clip"},
+    {text: body, fit: "wrap"},
+  ]
+  if (opts.canReply) lines.push({text: "Say reply to answer", fit: "drop"})
   return make(
     "message",
-    [
-      {text: sender, fit: "clip"},
-      {text: body, fit: "wrap"},
-      {text: "Say reply to answer", fit: "drop"},
-    ],
+    lines,
     6000,
     "reduced",
     ctx,

@@ -245,9 +245,10 @@ export function home(time: string, battery: string, ctx: CardContext): Card {
 /**
  * Apply the driving policy — the ONE place it is applied.
  *
- * Returns null when the card must not be shown, which the caller treats as
- * "hold it until the wearer stops", not "lose it": a suppressed message is
- * still a message. A "reduced" card comes back carrying its cut-down rows.
+ * Returns null when the card must not be shown. What the caller does with that
+ * depends on the card: a confirmation is mid-interaction and waits, whereas a
+ * notification is perishable and is dropped outright (see notify.ts). Nothing
+ * here queues anything. A "reduced" card comes back carrying its cut-down rows.
  */
 export function gate(card: Card, driving: boolean): Card | null {
   if (!driving) return card

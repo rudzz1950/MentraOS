@@ -67,9 +67,9 @@ export class Assistant {
   }
 
   /**
-   * Show a card, applying the driving policy. A suppressed card means the
-   * panel keeps whatever it had rather than going blank — a blank HUD at speed
-   * reads as a dead device.
+   * Show a card, applying the driving policy. A suppressed card leaves the
+   * panel as it was rather than blanking it — a blank HUD at speed reads as a
+   * dead device. Nothing is queued for later: see hud/notify.ts on why.
    */
   private async present(card: cards.Card): Promise<void> {
     const shown = cards.gate(card, this.opts.driving?.() ?? false)

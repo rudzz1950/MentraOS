@@ -1,0 +1,13 @@
+{
+  "name": "local-assistant",
+  "private": true,
+  "description": "First-party assistant miniapp: the personal agent and its memory",
+  "scripts": {
+    "test": "bun test src",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "bun-types": "^1.1.0",
+    "typescript": "^5.6.0"
+  }
+}

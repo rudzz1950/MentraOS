@@ -430,6 +430,25 @@ message CommandResult {
   string msg_id = 1;   // echoes the PhoneToGlasses.msg_id being answered
   Status status = 2;
   string detail = 3;   // optional, human-readable, failures only
+
+  // Timing, so command-to-display latency can be measured rather than guessed.
+  //
+  // Both are the GLASSES' own monotonic uptime in milliseconds, which shares no
+  // epoch with the phone's clock. That is deliberate: there is no clock
+  // synchronisation on this link, so the firmware reports only differences it
+  // can vouch for and the phone does the arithmetic against its own send time.
+  //
+  //   round trip        = phone's ack-receive time - phone's send time
+  //   firmware span     = done_uptime_ms - recv_uptime_ms
+  //   link, both ways   = round trip - firmware span
+  //
+  // Splitting the link figure into uplink and downlink needs a symmetry
+  // assumption that BLE does not honour: a write and a notification do not cost
+  // the same, and both are quantised by the connection interval. So the phone
+  // should report the round trip and the firmware span, and treat half the
+  // remainder as an estimate rather than a measurement.
+  optional uint32 recv_uptime_ms = 4;   // command fully decoded
+  optional uint32 done_uptime_ms = 5;   // the display flush completed
 }
 
 // The one screen the glasses render on their own, so a momentary link drop is

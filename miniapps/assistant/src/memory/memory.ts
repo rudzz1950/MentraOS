@@ -21,6 +21,20 @@ import {EmbeddingUnavailableError} from "./embeddings"
 import {MemoryBlobStore, MemoryKeyValueStore, type BlobStore, type KeyValueStore} from "./ports"
 import {combine, exactScore, keywordScore, memoryTokens, recencyScore} from "./scoring"
 import {detectSensitive, SensitiveInferenceError} from "./sensitive"
+
+/**
+ * A captured memory arrived with no consent scope.
+ *
+ * Thrown rather than dropped, and never downgraded to self_reported, because a
+ * silent downgrade is how a record about someone else ends up outside every
+ * scope and survives their revocation.
+ */
+export class UnscopedCaptureError extends Error {
+  constructor() {
+    super("A captured memory must carry a scopeId. See ADR-002: completeness of deletion depends on it.")
+    this.name = "UnscopedCaptureError"
+  }
+}
 import {
   ALWAYS_LOADED_CLASSES,
   type Memory,
@@ -178,6 +192,28 @@ export class MemoryService implements MemoryStore {
   async add(input: MemoryInput): Promise<Memory> {
     await this.load()
 
+    /*
+     * The write-path rule from ADR-002, enforced here because enforcing it
+     * anywhere else makes it a convention rather than a guarantee.
+     *
+     * Completeness of deletion cannot be proven by searching for leftovers —
+     * that only proves nothing was found. It is provable only if an untagged
+     * write was impossible, so a captured memory with no scope is refused and
+     * there is no bypass for it.
+     */
+    const provenance = input.source.provenance ?? "self_reported"
+    if (provenance === "captured" && !input.source.scopeId) {
+      throw new UnscopedCaptureError()
+    }
+    if (provenance === "self_reported" && input.source.scopeId) {
+      // Refused rather than ignored. A scope on a note nobody consented to
+      // would make a later deletion look complete when it had covered
+      // something it never needed to.
+      throw new Error(
+        "A self_reported memory must not carry a scopeId: it implies a consent scope that does not apply.",
+      )
+    }
+
     // An inferred memory is a guess. It is never stored unapproved, and never
     // at all if it reads as a sensitive attribute the user did not state.
     if (input.class === "inferred_preference") {
@@ -194,7 +230,7 @@ export class MemoryService implements MemoryStore {
       class: input.class,
       text: input.text,
       tags: input.tags ?? [],
-      source: input.source,
+      source: {...input.source, provenance},
       createdAt: t,
       updatedAt: t,
       pinned: input.pinned ?? false,
@@ -291,6 +327,42 @@ export class MemoryService implements MemoryStore {
     await this.storage.delete(KEY_PREFIX + id)
     await this.persistIndex()
     return true
+  }
+
+  /**
+   * Delete everything belonging to one consent scope, and say what was removed.
+   *
+   * This is the revocation path from ADR-002. The receipt is the point: a
+   * deletion that reports nothing cannot be audited, and a count of zero where
+   * one was expected is a finding rather than a success. Vectors are dropped
+   * alongside the rows, because an embedding of what someone said is still
+   * about them.
+   */
+  async deleteScope(scopeId: string): Promise<{scopeId: string; deleted: number; ids: string[]}> {
+    await this.load()
+    if (!scopeId) throw new Error("deleteScope needs a scopeId")
+
+    const ids = [...this.rows.values()]
+      .filter(m => m.source.scopeId === scopeId)
+      .map(m => m.id)
+
+    for (const id of ids) {
+      this.rows.delete(id)
+      this.dropVector(id)
+      await this.storage.delete(KEY_PREFIX + id)
+    }
+    if (ids.length) await this.persistIndex()
+    return {scopeId, deleted: ids.length, ids}
+  }
+
+  /** The scopes this store currently holds anything for. */
+  async scopes(): Promise<string[]> {
+    await this.load()
+    const found = new Set<string>()
+    for (const m of this.rows.values()) {
+      if (m.source.scopeId) found.add(m.source.scopeId)
+    }
+    return [...found].sort()
   }
 
   async exportAll(): Promise<MemoryExport> {

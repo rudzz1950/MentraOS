@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
 import {describe, expect, test} from "bun:test"
 import {EmbeddingUnavailableError, FakeEmbeddingProvider} from "../embeddings"
-import {MemoryService} from "../memory"
+import {MemoryService, UnscopedCaptureError} from "../memory"
 import {MemoryBlobStore, MemoryKeyValueStore} from "../ports"
 import {SensitiveInferenceError} from "../sensitive"
 import type {MemoryInput} from "../types"
@@ -328,5 +328,136 @@ describe("embedding consent", () => {
     const s = await m.stats()
     expect(s.embeddingConsent).toBe("denied")
     expect(p.callCount).toBe(0)
+  })
+})
+
+describe("consent scoping — ADR-002's write-path rule", () => {
+  const captured = (scopeId?: string) => ({
+    class: "episodic" as const,
+    text: "Ravi said the compressor was replaced in March",
+    source: {
+      turnId: "t1",
+      turnAt: 1,
+      provenance: "captured" as const,
+      ...(scopeId ? {scopeId} : {}),
+    },
+  })
+
+  test("a captured memory with no scope is refused, not downgraded", async () => {
+    const m = service()
+    await expect(m.add(captured())).rejects.toThrow(UnscopedCaptureError)
+    expect((await m.list()).length).toBe(0)
+  })
+
+  test("with a scope it stores", async () => {
+    const m = service()
+    const stored = await m.add(captured("scope-1"))
+    expect(stored.source.scopeId).toBe("scope-1")
+    expect(stored.source.provenance).toBe("captured")
+  })
+
+  test("a self-reported note needs no scope", async () => {
+    const m = service()
+    const stored = await m.add({
+      class: "episodic",
+      text: "the lab quote was 90k",
+      source: {turnId: "t1", turnAt: 1},
+    })
+    expect(stored.source.provenance).toBe("self_reported")
+  })
+
+  test("and must not carry one, which would fake coverage", async () => {
+    const m = service()
+    await expect(
+      m.add({
+        class: "episodic",
+        text: "the lab quote was 90k",
+        source: {turnId: "t1", turnAt: 1, provenance: "self_reported", scopeId: "scope-1"},
+      }),
+    ).rejects.toThrow(/must not carry a scopeId/)
+  })
+
+  test("existing memories default to self_reported, not captured", async () => {
+    // Every memory this store held before provenance existed came from the
+    // wearer's dictation. Defaulting to "captured" would have retro-tagged
+    // them all as needing a scope they never had.
+    const m = service()
+    const stored = await m.add({
+      class: "profile_fact",
+      text: "works on wearables",
+      source: {turnId: "t1", turnAt: 1},
+    })
+    expect(stored.source.provenance).toBe("self_reported")
+  })
+})
+
+describe("revoking a scope", () => {
+  const captured = (text: string, scopeId: string) => ({
+    class: "episodic" as const,
+    text,
+    source: {turnId: "t1", turnAt: 1, provenance: "captured" as const, scopeId},
+  })
+
+  test("removes everything in it and reports the count", async () => {
+    const m = service()
+    await m.add(captured("first thing said", "scope-1"))
+    await m.add(captured("second thing said", "scope-1"))
+    await m.add(captured("someone else entirely", "scope-2"))
+
+    const receipt = await m.deleteScope("scope-1")
+    expect(receipt.deleted).toBe(2)
+    expect(receipt.ids.length).toBe(2)
+    expect((await m.list()).length).toBe(1)
+  })
+
+  test("leaves other scopes alone", async () => {
+    const m = service()
+    await m.add(captured("in scope one", "scope-1"))
+    await m.add(captured("in scope two", "scope-2"))
+    await m.deleteScope("scope-1")
+    const left = await m.list()
+    expect(left.length).toBe(1)
+    expect(left[0].source.scopeId).toBe("scope-2")
+  })
+
+  test("leaves the wearer's own notes alone", async () => {
+    const m = service()
+    await m.add({class: "episodic", text: "my own note", source: {turnId: "t1", turnAt: 1}})
+    await m.add(captured("what Ravi said", "scope-1"))
+    await m.deleteScope("scope-1")
+    const left = await m.list()
+    expect(left.length).toBe(1)
+    expect(left[0].text).toBe("my own note")
+  })
+
+  test("a count of zero is reported rather than passing as success", async () => {
+    const m = service()
+    const receipt = await m.deleteScope("scope-never-existed")
+    expect(receipt.deleted).toBe(0)
+    expect(receipt.scopeId).toBe("scope-never-existed")
+  })
+
+  test("the deleted memory is gone from search, not just from the list", async () => {
+    // An embedding of what someone said is still about them, so the vector
+    // has to go with the row.
+    const m = service()
+    await m.add(captured("the compressor was replaced in March", "scope-1"))
+    expect((await m.search("compressor")).length).toBeGreaterThan(0)
+    await m.deleteScope("scope-1")
+    expect((await m.search("compressor")).length).toBe(0)
+  })
+
+  test("it lists the scopes it holds, so a revocation can be checked", async () => {
+    const m = service()
+    await m.add(captured("a", "scope-b"))
+    await m.add(captured("b", "scope-a"))
+    expect(await m.scopes()).toEqual(["scope-a", "scope-b"])
+    await m.deleteScope("scope-a")
+    expect(await m.scopes()).toEqual(["scope-b"])
+  })
+
+  test("an empty scopeId is refused rather than deleting everything untagged", async () => {
+    const m = service()
+    await expect(m.deleteScope("")).rejects.toThrow()
   })
 })

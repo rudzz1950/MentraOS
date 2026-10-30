@@ -632,3 +632,49 @@ describe("the built-in timer is a default, not a hijack", () => {
     expect(r.via).toBe("timers")
   })
 })
+
+describe("what the wearer is told when nothing answers", () => {
+  const dead = () =>
+    new FakeModel("dead", () => {
+      throw new Error("offline")
+    })
+
+  function withHeavy(hasHeavyTier: boolean) {
+    const hud = new FakeHud()
+    const assistant = new Assistant({
+      transcripts: {on: () => () => {}},
+      hud,
+      voice: new FakeVoice(),
+      memory: memory(),
+      router: new ModelRouter([dead()], 20),
+      clock,
+      hasHeavyTier,
+    })
+    return {assistant, hud}
+  }
+
+  test("a configured heavy tier that is unreachable invites a retry", async () => {
+    const {assistant, hud} = withHeavy(true)
+    const r = await assistant.handle("what is the capital of Karnataka", true)
+    expect(r.error).toMatch(/can't reach/i)
+    expect(hud.flat.at(-1)).toMatch(/can't reach/i)
+  })
+
+  test("no heavy tier states a deployment fact instead of a fault", async () => {
+    // An on-premise install with no GPU is working as specified. Telling the
+    // wearer to try again would be a lie they could act on forever.
+    const {assistant, hud} = withHeavy(false)
+    const r = await assistant.handle("what is the capital of Karnataka", true)
+    expect(r.error).toMatch(/aren't set up/i)
+    expect(r.error).not.toMatch(/can't reach/i)
+    expect(hud.flat.at(-1)).toMatch(/aren't set up/i)
+  })
+
+  test("the hosted default assumes a heavy tier exists", async () => {
+    // The pessimistic default would tell an ordinary user a capability is
+    // missing when it is merely offline.
+    const {assistant} = build({model: dead()})
+    const r = await assistant.handle("what is the capital of Karnataka", true)
+    expect(r.error).toMatch(/can't reach/i)
+  })
+})

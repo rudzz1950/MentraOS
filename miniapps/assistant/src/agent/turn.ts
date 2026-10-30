@@ -14,6 +14,7 @@ import {STANDIN_OLED, type PanelProfile} from "../hud/panel"
 import {Addressing} from "./addressing"
 import {BargeIn, OutboundLimit} from "./bargein"
 import {CancelledError, ModelRouter, ModelsUnavailableError, rulesAnswer} from "./model"
+import {unavailableMessage} from "./providers"
 import {classify, type Intent} from "./router"
 import {TimerStore} from "./timers"
 import type {Clock, Hud, Tool, TranscriptSource, Voice} from "./ports"
@@ -59,6 +60,14 @@ export interface AssistantOptions {
   historyTurns?: number
   /** Opens and closes the floor. Omitted means `handle` is told directly. */
   addressing?: Addressing
+  /**
+   * Whether a heavy tier exists in this deployment. Changes what the wearer is
+   * told when nothing answers: a site with no heavy tier is working as
+   * specified, not broken, and should not be invited to retry. Defaults to
+   * true, because that is the hosted case and the pessimistic default would
+   * tell a normal user a capability is missing when it is merely offline.
+   */
+  hasHeavyTier?: boolean
 }
 
 /**
@@ -215,8 +224,10 @@ export class Assistant {
         return {intent: "question", interrupted: true}
       }
       if (err instanceof ModelsUnavailableError) {
-        // Say so plainly. Silence reads as a broken device.
-        const msg = "Can't reach the assistant right now."
+        // Say so plainly. Silence reads as a broken device — and say WHICH
+        // thing is wrong, because "not set up here" and "can't reach it" call
+        // for different reactions from the wearer.
+        const msg = unavailableMessage(this.opts.hasHeavyTier ?? true)
         await this.present(cards.error(msg, {panel: this.panel}))
         return {intent: "question", error: msg}
       }

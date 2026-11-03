@@ -195,6 +195,10 @@ export class ScopedMap<T> implements GovernedStore {
     return this.rows.get(id)?.value
   }
 
+  delete(id: string): boolean {
+    return this.rows.delete(id)
+  }
+
   async purge(scopeId: string): Promise<number> {
     let n = 0
     for (const [id, r] of this.rows) {

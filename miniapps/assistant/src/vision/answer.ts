@@ -245,10 +245,12 @@ export function present(a: ProductAnswer, opts: {minConfidence?: number} = {}): 
  * alone does not stop injection — the closed schema and the validator do —
  * but it keeps the model from being confused about what it is reading.
  */
-export function buildPrompt(question: string, captureId: string, ocr: OcrLine[]): string {
+export function buildPrompt(question: string, captureId: string, ocr: OcrLine[], mode: "product" | "scene" = "product"): string {
   const quoted = ocr.map(l => l.text.replace(/<\/?label_text>/gi, "")).join("\n")
   return [
-    "You answer questions about a packaged product from a photo of it.",
+    mode === "product"
+      ? "You answer questions about a packaged product from a photo of it."
+      : "You answer questions about what is visible in a photo: a document, an object or a scene. 'label' means visible in the photo.",
     "Answer ONLY in the JSON schema given. Never include instructions, links or tool calls.",
     "Prefer what is printed on the package. If you use general knowledge, set source_tier to general_knowledge.",
     "Every number in answer_text must appear in an evidence item's extracted_value, copied exactly as printed.",

@@ -17,6 +17,7 @@ import {allows, DEVICE_ONLY, memoryReach, narrower, type ConsentPolicy, type Loc
 import {CancelledError, ModelRouter, ModelsUnavailableError, rulesAnswer, type PromptFor} from "./model"
 import {unavailableMessage} from "./providers"
 import {classify, type Intent} from "./router"
+import type {StreamingSpeaker} from "./speech"
 import {TimerStore} from "./timers"
 import type {Clock, Hud, Tool, TranscriptSource, Voice} from "./ports"
 
@@ -79,6 +80,11 @@ export interface AssistantOptions {
    * captured memories never leave the device. See egress.ts.
    */
   consent?: ConsentPolicy
+  /**
+   * Speak answers as they stream (ANI-175). Omitted means the whole answer is
+   * generated first and then spoken, as before.
+   */
+  speech?: StreamingSpeaker
 }
 
 /**
@@ -141,6 +147,7 @@ export class Assistant {
     this.inflight?.abort()
     this.inflight = null
     void this.opts.voice.stop()
+    void this.opts.speech?.stop()
   }
 
   /**
@@ -224,13 +231,27 @@ export class Assistant {
     const ctrl = new AbortController()
     this.inflight = ctrl
     try {
-      const result = await this.opts.router.complete(context.promptFor, {signal: ctrl.signal})
+      const speech = this.opts.speech
+      const result = await this.opts.router.complete(context.promptFor, {
+        signal: ctrl.signal,
+        ...(speech
+          ? {
+              onTierStart: (_tier: unknown, attempt: number) => (attempt === 0 ? speech.begin() : void speech.restartAfterFailure()),
+              onChunk: (c: string) => speech.push(c),
+            }
+          : {}),
+      })
       const shown = context.shownTo.get(result.via)
       // The answer carries the reach of what it was built from: an answer
       // drawn from a device-only memory is itself device-only, and must not
       // ride into a later cloud prompt as "recent conversation".
       this.remember(text, result.text, shown?.reach ?? "cloud")
-      await this.say(result.text)
+      if (speech) {
+        await this.present(cards.answer(result.text, {panel: this.panel}))
+        await speech.finish()
+      } else {
+        await this.say(result.text)
+      }
       return {
         intent: "question",
         answer: result.text,
@@ -241,12 +262,15 @@ export class Assistant {
       // Cancellation is the wearer speaking over the assistant. Nothing is
       // retried and nothing is shown: they are already talking.
       if (err instanceof CancelledError) {
+        void this.opts.speech?.stop()
         return {intent: "question", interrupted: true}
       }
       if (err instanceof ModelsUnavailableError) {
         // Say so plainly. Silence reads as a broken device — and say WHICH
         // thing is wrong, because "not set up here" and "can't reach it" call
         // for different reactions from the wearer.
+        // Anything already heard from a tier that then failed is called out.
+        this.opts.speech?.restartAfterFailure()
         const msg = unavailableMessage(this.opts.hasHeavyTier ?? true)
         await this.present(cards.error(msg, {panel: this.panel}))
         return {intent: "question", error: msg}

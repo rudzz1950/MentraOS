@@ -106,8 +106,38 @@ export interface Memory {
   confidence?: number
   /** Epoch ms after which this memory should be dropped. Undefined = no expiry. */
   expiresAt?: number
+  /**
+   * Only meaningful for `active_task`: when the wearer said it was done.
+   *
+   * Completion is recorded, never inferred. Guessing it from `createdAt` would
+   * delete an open task on a timer, and an open task the assistant forgot is
+   * a promise the wearer made to someone else, silently dropped.
+   */
+  completedAt?: number
   /** False while the embedding is still queued (offline, or consent off). */
   embedded: boolean
+}
+
+/**
+ * How long each class is kept, applied when a memory is written and when a
+ * task is completed — not only when someone reads it.
+ *
+ * `afterCreateMs` sets an expiry at write time for classes that are only
+ * useful for a while. `afterCompleteMs` starts the clock when a task is marked
+ * done. A class with no entry keeps its memories until they are deleted.
+ */
+export type RetentionPolicy = Partial<Record<MemoryClass, {afterCreateMs?: number; afterCompleteMs?: number}>>
+
+const DAY_MS = 86_400_000
+
+/**
+ * The defaults the architecture states and nothing more: an active task is
+ * "open until done, then kept 7 days". Other classes get no default expiry,
+ * because inventing a retention period nobody decided is worse than having
+ * none — the host passes its own policy when one is agreed.
+ */
+export const DEFAULT_RETENTION: RetentionPolicy = {
+  active_task: {afterCompleteMs: 7 * DAY_MS},
 }
 
 /** What a caller supplies to `add`. The service fills in ids, timestamps and embedding state. */
@@ -130,6 +160,32 @@ export interface MemoryPatch {
   approved?: boolean
   class?: MemoryClass
   expiresAt?: number
+}
+
+/** A page of `list`. `nextCursor` is absent on the last page. */
+export interface MemoryPage {
+  items: Memory[]
+  nextCursor?: string
+}
+
+export interface PageOptions {
+  classes?: MemoryClass[]
+  includeExpired?: boolean
+  /** Rows per page. Clamped to 1..MAX_PAGE_SIZE. */
+  limit?: number
+  /** From the previous page's `nextCursor`. */
+  cursor?: string
+}
+
+/** What `importAll` took, and what it refused and why. */
+export interface ImportReport {
+  imported: number
+  /** Rows a live store would never have accepted: an unscoped capture, an unapproved inference. */
+  rejected: {id: string; reason: string}[]
+  /** Rows whose consent scope has been revoked here. Restoring a backup must not undo a revocation. */
+  revoked: string[]
+  /** Rows whose retention had already run out. */
+  expired: string[]
 }
 
 export interface SearchOptions {

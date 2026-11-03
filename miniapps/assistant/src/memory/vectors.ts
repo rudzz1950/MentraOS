@@ -38,12 +38,51 @@ export const VECTOR_BLOB_VERSION = 1
 const MAGIC = 0x4d454d56 // "MEMV"
 const HEADER_BYTES = 64
 
+const MODEL_TAG_BYTES = 32
+
+/**
+ * The model id as it is stored in the header: the id itself when it fits in
+ * 32 bytes, otherwise a prefix plus a hash of the whole id.
+ *
+ * The header used to cut the id at 32 bytes on write and compare it in full on
+ * read, so any longer id — "nomic-ai/nomic-embed-text-v1.5@768" is 34 — never
+ * matched itself. Every launch then read the cache as written by a different
+ * model, threw every vector away and re-sent the wearer's whole memory to the
+ * embedding provider. Plain truncation is no fix either: two versions of one
+ * model that differ only after byte 32 would then share a tag and the stale
+ * vectors would be trusted. Short ids are unchanged, so existing caches stay
+ * valid.
+ */
+export function modelTag(modelId: string): Uint8Array {
+  const bytes = new TextEncoder().encode(modelId)
+  if (bytes.length <= MODEL_TAG_BYTES) return bytes
+  // Two independent 32-bit FNV-1a passes: a 64-bit tag, no crypto dependency,
+  // and synchronous, which the load path needs.
+  let h1 = 0x811c9dc5
+  let h2 = 0x01000193 ^ bytes.length
+  for (const b of bytes) {
+    h1 = Math.imul(h1 ^ b, 0x01000193) >>> 0
+    h2 = Math.imul(h2 ^ b, 0x5bd1e995) >>> 0
+  }
+  const hash = h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0")
+  const out = new Uint8Array(MODEL_TAG_BYTES)
+  out.set(bytes.subarray(0, MODEL_TAG_BYTES - 17))
+  out.set(new TextEncoder().encode("#" + hash), MODEL_TAG_BYTES - 17)
+  return out
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
 /**
  * Serialize vectors: a fixed 64-byte header then the packed floats.
  * Little-endian, which every phone we target is.
  */
 export function packVectors(header: Omit<VectorBlobHeader, "version">, data: Float32Array): Uint8Array {
-  const modelBytes = new TextEncoder().encode(header.modelId).slice(0, 32)
+  const modelBytes = modelTag(header.modelId)
   const out = new Uint8Array(HEADER_BYTES + data.byteLength)
   const view = new DataView(out.buffer)
   view.setUint32(0, MAGIC, true)
@@ -72,10 +111,11 @@ export function unpackVectors(bytes: Uint8Array | null, expectModelId: string): 
   const dim = view.getUint32(8, true)
   const count = view.getUint32(12, true)
   const modelLen = view.getUint32(16, true)
-  if (dim === 0 || dim > 8192 || modelLen > 32) return {status: "corrupt"}
-  const modelId = new TextDecoder().decode(bytes.subarray(20, 20 + modelLen))
+  if (dim === 0 || dim > 8192 || modelLen > MODEL_TAG_BYTES) return {status: "corrupt"}
+  const stored = bytes.subarray(20, 20 + modelLen)
+  const modelId = new TextDecoder().decode(stored)
   const header: VectorBlobHeader = {version, dim, count, modelId}
-  if (modelId !== expectModelId) return {status: "model_changed", header}
+  if (!sameBytes(stored, modelTag(expectModelId))) return {status: "model_changed", header}
 
   const need = count * dim * 4
   const have = bytes.length - HEADER_BYTES

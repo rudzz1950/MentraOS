@@ -32,3 +32,14 @@ jobs:
         run: python3 scripts/test_check_no_training_on_user_data.py
       - name: No training on user data
         run: python3 scripts/check-no-training-on-user-data.py
+
+  bus-imports:
+    # ADR-001: components depend on the Bus port, and only the Zenoh adapter
+    # may import Zenoh, so the transport stays replaceable and tests need none.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The check's own tests
+        run: python3 scripts/test_check_bus_imports.py
+      - name: Zenoh only behind its adapter
+        run: python3 scripts/check-bus-imports.py

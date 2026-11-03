@@ -142,6 +142,7 @@ export class PolicyEngine implements ConsentPolicy {
   private seen = new Set<string>()
   private confirmations = new Map<string, {actionId: string; payloadHash: string; expiresAt: number}>()
   private readonly log: AuditEvent[] = []
+  private revokeListeners: ((scopeId: string) => void)[] = []
   private n = 0
 
   constructor(private readonly opts: PolicyOptions) {}
@@ -168,9 +169,12 @@ export class PolicyEngine implements ConsentPolicy {
     const s = this.scopes.get(e.scopeId) ?? {grants: []}
     this.scopes.set(e.scopeId, s)
     if (e.kind === "revoke") {
-      if (s.revokedAt === undefined) s.revokedAt = e.issuedAt
+      const first = s.revokedAt === undefined
+      if (first) s.revokedAt = e.issuedAt
       s.grants = []
       this.audit({at: now, subject: "consent", decision: "accepted", reason: "revoked", ref: e.scopeId})
+      // Caches, queues and stores purge on this (offline.ts, lifecycle.ts).
+      if (first) for (const l of [...this.revokeListeners]) l(e.scopeId)
       return true
     }
     // Terminal: nothing re-opens a revoked scope. A new consent is a new scope.
@@ -180,6 +184,30 @@ export class PolicyEngine implements ConsentPolicy {
     s.grants.push(e)
     this.audit({at: now, subject: "consent", decision: "accepted", reason: "granted", ref: e.scopeId})
     return true
+  }
+
+  /** Called once per scope, when it is first revoked. */
+  onRevoke(fn: (scopeId: string) => void): () => void {
+    this.revokeListeners.push(fn)
+    return () => {
+      this.revokeListeners = this.revokeListeners.filter(l => l !== fn)
+    }
+  }
+
+  /** Revoked scopes, for the data lifecycle dashboard. */
+  revokedScopes(): string[] {
+    return [...this.scopes].filter(([, s]) => s.revokedAt !== undefined).map(([id]) => id).sort()
+  }
+
+  /** Scopes with at least one live grant, and what they allow. */
+  activeScopes(): {scopeId: string; purposes: Purpose[]; categories: DataCategory[]; maxReach: Locality; expiresAt: number}[] {
+    const now = this.opts.now()
+    const out = []
+    for (const [scopeId, s] of this.scopes) {
+      if (s.revokedAt !== undefined) continue
+      for (const g of s.grants) if (g.expiresAt > now) out.push({scopeId, purposes: g.purposes, categories: g.categories, maxReach: g.maxReach, expiresAt: g.expiresAt})
+    }
+    return out
   }
 
   isRevoked(scopeId: string): boolean {

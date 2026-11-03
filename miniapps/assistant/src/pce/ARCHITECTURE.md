@@ -35,9 +35,16 @@ a failure contract. Module names are the ones ANI-195 lists.
 | ActionDispatcher | ANI-207 (next) | In-flight action state | Timeout is a typed failure, never a retry of a consequential action |
 | ModelRouter | `agent/model.ts`, consent via `agent/egress.ts` | Nothing persistent | Falls through tiers; each tier sees only what consent allows |
 | MemoryPort | `memory/memory.ts` `MemoryStore` | Memories, revoked scopes | Write-path rules in one `assertWritable`; revocation survives restore |
-| ContextEngine, SensorFusion | ANI-200 / ANI-202 (next) | Working and situational context | Stale context expires rather than being used |
+| Input adapters | `pce/adapters.ts` `PerceptionHub` (ANI-201) | Nothing; validates and types each modality | A missing modality is absent, never blocking |
+| SensorFusion | `pce/fusion.ts` (ANI-202) | Clock alignment per source | Stale is `stale`, disagreement is `conflict`; never averaged; never drives a consequential action |
+| ContextEngine memory | `pce/memoryctx.ts` (ANI-203) over `MemoryStore` | Nothing new: the memory store stays canonical | Captured memories whose consent ended are not returned |
+| Proactive triggers | `pce/triggers.ts` (ANI-209) | Rules, their snoozes and budgets | Refuses with a reason; quiet hours via PolicyEngine |
+| Offline coordinator | `pce/offline.ts` (ANI-210) | The sync queue and context cache | Consequential actions are never queued; revocation purges both |
+| Data lifecycle | `pce/lifecycle.ts` (ANI-212) | Store inventory, pending revocations | Per-store receipt; unreachable stores retried until converged |
+| Settings centre | `pce/settings.ts` (ANI-213) | Nothing; every control calls the module that enforces it | Sensitive controls from HUD or voice need phone confirmation |
+| Simulator | `pce/simulator.ts` (ANI-214) | Nothing | A simulated pass can never close a physical requirement |
 | ToolAdapter | ANI-208 (next) | Nothing; wraps phone APIs as registered actions | Missing OS permission is `permission_denied` |
-| Telemetry | ANI-211 (next) | Nothing personal: ids, timings, outcomes | Dropped, never blocks a user action |
+| Telemetry | `pce/telemetry.ts` (ANI-211) | Local spans, metrics, events: ids, timings, outcomes | Content cannot be expressed in its attribute alphabet; dropped and counted |
 
 **Vendor isolation.** No module imports a bus vendor's types. `scripts/check-bus-imports.py`
 enforces it in CI (guardrails workflow); only a `*zenoh-adapter*` file may import Zenoh (ADR-001).

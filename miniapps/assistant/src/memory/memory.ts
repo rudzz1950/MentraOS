@@ -42,9 +42,34 @@ export class UnscopedCaptureError extends Error {
     this.name = "UnscopedCaptureError"
   }
 }
+
+/**
+ * A captured memory arrived for a consent scope that has been revoked.
+ *
+ * The usual way this happens is innocent: a write queued while offline lands
+ * after the person withdrew consent. It is refused all the same, because a
+ * revocation that a late write can undo was never complete.
+ */
+export class RevokedScopeError extends Error {
+  constructor(readonly scopeId: string) {
+    super(`Consent scope ${scopeId} has been revoked; nothing more may be stored under it.`)
+    this.name = "RevokedScopeError"
+  }
+}
+
+/** Largest page `listPage` returns, whatever the caller asks for. */
+export const MAX_PAGE_SIZE = 200
+
+/** Texts per embedding request when draining the queue. */
+export const FLUSH_BATCH_SIZE = 32
 import {
   ALWAYS_LOADED_CLASSES,
+  DEFAULT_RETENTION,
+  type ImportReport,
   type Memory,
+  type MemoryPage,
+  type PageOptions,
+  type RetentionPolicy,
   type MemoryClass,
   type MemoryExport,
   type MemoryInput,
@@ -57,6 +82,17 @@ import {unpackVectors, VectorSet, type VectorLoadStatus} from "./vectors"
 const KEY_PREFIX = "mem:"
 const KEY_INDEX = "mem:index"
 const BLOB_VECTORS = "mem:vectors"
+/**
+ * Scopes revoked on this device. Kept after their rows are gone, so a restore,
+ * an import or a late queued write cannot bring them back. Holds scope ids
+ * only — an opaque reference to a ledger entry, nothing about the person.
+ */
+const KEY_REVOKED = "mem:revoked"
+
+/** Pinned memories never expire, in reads as well as in collection. */
+function isLive(m: Memory, now: number): boolean {
+  return m.pinned || m.expiresAt === undefined || m.expiresAt > now
+}
 
 /** Persisted alongside the rows so a reload knows which slot held which memory. */
 interface IndexRecord {
@@ -81,6 +117,8 @@ export interface MemoryServiceOptions {
    * than a pre-set switch. Search still works meanwhile, on keywords.
    */
   embeddingsEnabled?: boolean
+  /** How long each class is kept. Defaults to DEFAULT_RETENTION. */
+  retention?: RetentionPolicy
   /** Injected so tests are deterministic. */
   now?: () => number
   idgen?: () => string
@@ -108,6 +146,8 @@ export interface MemoryStore {
   get(id: string): Promise<Memory | null>
   list(opts?: {classes?: MemoryClass[]; includeExpired?: boolean}): Promise<Memory[]>
   search(query: string, k?: number, opts?: SearchOptions): Promise<SearchResult[]>
+  /** `list`, bounded: at most MAX_PAGE_SIZE rows per call. */
+  listPage(opts?: PageOptions): Promise<MemoryPage>
   update(id: string, patch: MemoryPatch): Promise<Memory | null>
   delete(id: string): Promise<boolean>
   exportAll(): Promise<MemoryExport>
@@ -120,6 +160,7 @@ export class MemoryService implements MemoryStore {
   private readonly provider: EmbeddingProvider
   private readonly now: () => number
   private readonly idgen: () => string
+  private readonly retention: RetentionPolicy
 
   private embeddingsEnabled: boolean
   private consentAsked: boolean
@@ -129,6 +170,7 @@ export class MemoryService implements MemoryStore {
   private vectorStatus: VectorLoadStatus | "unloaded" = "unloaded"
   private loaded = false
   private dirtyVectors = false
+  private revoked = new Set<string>()
 
   constructor(opts: MemoryServiceOptions = {}) {
     this.storage = opts.storage ?? new MemoryKeyValueStore()
@@ -138,6 +180,7 @@ export class MemoryService implements MemoryStore {
     this.embeddingsEnabled = opts.embeddingsEnabled ?? false
     this.consentAsked = opts.embeddingsEnabled !== undefined
     this.now = opts.now ?? (() => Date.now())
+    this.retention = opts.retention ?? DEFAULT_RETENTION
     let n = 0
     this.idgen = opts.idgen ?? (() => `m${(++n).toString(36)}${this.now().toString(36)}`)
     this.vectors = new VectorSet(this.provider.dimensions)
@@ -153,9 +196,20 @@ export class MemoryService implements MemoryStore {
     const raw = await this.storage.get(KEY_INDEX)
     const index: IndexRecord = raw ? JSON.parse(raw) : {version: 1, slots: [], ids: []}
 
+    const revoked = await this.storage.get(KEY_REVOKED)
+    if (revoked) for (const id of JSON.parse(revoked) as string[]) this.revoked.add(id)
+
     for (const id of index.ids) {
       const row = await this.storage.get(KEY_PREFIX + id)
-      if (row) this.rows.set(id, JSON.parse(row) as Memory)
+      if (!row) continue
+      const m = JSON.parse(row) as Memory
+      // A revocation whose row deletes were interrupted finishes here, rather
+      // than leaving the rows to reappear on the next launch.
+      if (m.source.scopeId && this.revoked.has(m.source.scopeId)) {
+        await this.storage.delete(KEY_PREFIX + id)
+        continue
+      }
+      this.rows.set(id, m)
     }
 
     const unpacked = unpackVectors(await this.blobs.bytes(BLOB_VECTORS), this.provider.modelId)
@@ -199,37 +253,15 @@ export class MemoryService implements MemoryStore {
   async add(input: MemoryInput): Promise<Memory> {
     await this.load()
 
-    /*
-     * The write-path rule from ADR-002, enforced here because enforcing it
-     * anywhere else makes it a convention rather than a guarantee.
-     *
-     * Completeness of deletion cannot be proven by searching for leftovers —
-     * that only proves nothing was found. It is provable only if an untagged
-     * write was impossible, so a captured memory with no scope is refused and
-     * there is no bypass for it.
-     */
     const provenance = input.source.provenance ?? "self_reported"
-    if (provenance === "captured" && !input.source.scopeId) {
-      throw new UnscopedCaptureError()
-    }
-    if (provenance === "self_reported" && input.source.scopeId) {
-      // Refused rather than ignored. A scope on a note nobody consented to
-      // would make a later deletion look complete when it had covered
-      // something it never needed to.
-      throw new Error(
-        "A self_reported memory must not carry a scopeId: it implies a consent scope that does not apply.",
-      )
-    }
-
-    // An inferred memory is a guess. It is never stored unapproved, and never
-    // at all if it reads as a sensitive attribute the user did not state.
-    if (input.class === "inferred_preference") {
-      if (!input.approved) {
-        throw new Error("An inferred preference needs explicit approval before it can be stored.")
-      }
-      const category = detectSensitive(input.text)
-      if (category) throw new SensitiveInferenceError(category)
-    }
+    this.assertWritable({
+      class: input.class,
+      text: input.text,
+      // Absent approval is no approval for a guess; for a stated memory the
+      // field means nothing and defaults to true, as the row always has.
+      approved: input.approved ?? input.class !== "inferred_preference",
+      source: {...input.source, provenance},
+    })
 
     const t = this.now()
     const memory: Memory = {
@@ -243,7 +275,9 @@ export class MemoryService implements MemoryStore {
       pinned: input.pinned ?? false,
       approved: input.approved ?? true,
       confidence: input.confidence,
-      expiresAt: input.expiresAt,
+      // Retention is applied when the row is written, so a memory never exists
+      // without the expiry its class promises. An explicit expiry wins.
+      expiresAt: input.expiresAt ?? this.expiryAtCreate(input.class, t),
       embedded: false,
     }
     this.rows.set(memory.id, memory)
@@ -263,8 +297,62 @@ export class MemoryService implements MemoryStore {
     const now = this.now()
     return [...this.rows.values()]
       .filter(m => !opts.classes || opts.classes.includes(m.class))
-      .filter(m => opts.includeExpired || !m.expiresAt || m.expiresAt > now)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .filter(m => opts.includeExpired || isLive(m, now))
+      .sort(newestFirst)
+  }
+
+  /**
+   * One page of `list`, newest first.
+   *
+   * The cursor names the last row returned rather than an offset, so a write
+   * between two pages neither repeats a row nor skips one.
+   */
+  async listPage(opts: PageOptions = {}): Promise<MemoryPage> {
+    const all = await this.list(opts)
+    const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, Math.floor(opts.limit ?? 50)))
+    let start = 0
+    if (opts.cursor) {
+      const after = decodeCursor(opts.cursor)
+      start = all.findIndex(m => newestFirst(m, after) > 0)
+      if (start < 0) start = all.length
+    }
+    const items = all.slice(start, start + limit)
+    const last = items[items.length - 1]
+    return start + limit < all.length && last ? {items, nextCursor: encodeCursor(last)} : {items}
+  }
+
+  /**
+   * Mark an active task done, and start its retention clock.
+   *
+   * The only way a task becomes complete. Idempotent: completing it again keeps
+   * the first completion time, so a repeated "done" cannot extend retention.
+   */
+  async complete(id: string): Promise<Memory | null> {
+    await this.load()
+    const m = this.rows.get(id)
+    if (!m) return null
+    if (m.class !== "active_task") throw new Error(`Only an active_task can be completed, not ${m.class}.`)
+    if (m.completedAt !== undefined) return m
+    const t = this.now()
+    m.completedAt = t
+    const after = this.retention.active_task?.afterCompleteMs
+    if (after !== undefined) m.expiresAt = t + after
+    m.updatedAt = t
+    await this.persistRow(m)
+    return m
+  }
+
+  /** Undo a completion: the task is open again and its retention clock stops. */
+  async reopen(id: string): Promise<Memory | null> {
+    await this.load()
+    const m = this.rows.get(id)
+    if (!m || m.completedAt === undefined) return m ?? null
+    const after = this.retention.active_task?.afterCompleteMs
+    if (after !== undefined && m.expiresAt === m.completedAt + after) m.expiresAt = undefined
+    m.completedAt = undefined
+    m.updatedAt = this.now()
+    await this.persistRow(m)
+    return m
   }
 
   /** Memories small and stable enough to ride in every prompt. */
@@ -292,7 +380,7 @@ export class MemoryService implements MemoryStore {
     for (const m of this.rows.values()) {
       if (opts.classes && !opts.classes.includes(m.class)) continue
       if (opts.tags && !opts.tags.every(t => m.tags.includes(t))) continue
-      if (m.expiresAt && m.expiresAt <= now) continue
+      if (!isLive(m, now)) continue
       if (opts.includeUnembedded === false && !m.embedded) continue
 
       const tokens = memoryTokens(m)
@@ -315,8 +403,15 @@ export class MemoryService implements MemoryStore {
     await this.load()
     const m = this.rows.get(id)
     if (!m) return null
+    const next = {...m, ...patch}
+    // The same rules as add. Without this, a patch could turn a stated memory
+    // into an unapproved inference, or give an inference sensitive text, and
+    // store what add would have refused.
+    this.assertWritable(next)
     const textChanged = patch.text !== undefined && patch.text !== m.text
     Object.assign(m, patch, {updatedAt: this.now()})
+    // Completion belongs to tasks; a memory that stops being one loses it.
+    if (m.class !== "active_task") m.completedAt = undefined
     if (textChanged) {
       m.embedded = false
       this.dropVector(id)
@@ -353,6 +448,12 @@ export class MemoryService implements MemoryStore {
       .filter(m => m.source.scopeId === scopeId)
       .map(m => m.id)
 
+    // Recorded first: if the app dies halfway through the deletes, the next
+    // load finishes the job instead of resurrecting the remainder.
+    if (!this.revoked.has(scopeId)) {
+      this.revoked.add(scopeId)
+      await this.storage.set(KEY_REVOKED, JSON.stringify([...this.revoked].sort()))
+    }
     for (const id of ids) {
       this.rows.delete(id)
       this.dropVector(id)
@@ -378,7 +479,7 @@ export class MemoryService implements MemoryStore {
     await this.load()
     const now = this.now()
     const ids = [...this.rows.values()]
-      .filter(m => !m.pinned && m.expiresAt !== undefined && m.expiresAt <= now)
+      .filter(m => !isLive(m, now))
       .map(m => m.id)
 
     for (const id of ids) {
@@ -418,9 +519,13 @@ export class MemoryService implements MemoryStore {
       if (!group.merge.every(m => mergeable(group.keep, m))) continue
       if (!this.rows.has(group.keep.id)) continue
 
-      const survivor = mergeInto(group)
+      // The survivor's text may have changed, so its vector is stale. It goes
+      // back on the queue: leaving `embedded` true with no vector made the
+      // merged fact invisible to semantic search until the next restart.
+      const survivor: Memory = {...mergeInto(group), embedded: false}
+      this.dropVector(survivor.id)
       this.rows.set(survivor.id, survivor)
-      await this.storage.set(KEY_PREFIX + survivor.id, JSON.stringify(survivor))
+      await this.persistRow(survivor)
       merged++
 
       for (const victim of group.merge) {
@@ -429,8 +534,7 @@ export class MemoryService implements MemoryStore {
         await this.storage.delete(KEY_PREFIX + victim.id)
         removed++
       }
-      // The survivor's text may have changed, so its vector is stale.
-      this.dropVector(survivor.id)
+      await this.embedOne(survivor)
     }
 
     if (merged || removed) await this.persistIndex()
@@ -454,40 +558,91 @@ export class MemoryService implements MemoryStore {
 
   /** Replaces everything. Vectors are recomputed, never trusted from a dump. */
   async importAll(dump: MemoryExport): Promise<number> {
+    return (await this.importChecked(dump)).imported
+  }
+
+  /**
+   * `importAll`, with the receipt.
+   *
+   * A dump is held to the same rules as a live write. Importing used to be a
+   * way round every one of them: an unscoped capture, an unapproved inference
+   * or a revoked scope's rows from an old backup all went straight in. A
+   * restore must not be the thing that undoes a deletion.
+   */
+  async importChecked(dump: MemoryExport): Promise<ImportReport> {
     await this.load()
+    if (dump.version !== 1) throw new Error(`Unknown export version ${String(dump.version)}`)
+    const now = this.now()
+    const report: ImportReport = {imported: 0, rejected: [], revoked: [], expired: []}
+
+    const accepted: Memory[] = []
+    for (const m of dump.memories) {
+      const provenance = m.source?.provenance ?? "self_reported"
+      const copy: Memory = {...m, source: {...m.source, provenance}, embedded: false}
+      if (copy.source.scopeId && this.revoked.has(copy.source.scopeId)) {
+        report.revoked.push(copy.id)
+        continue
+      }
+      if (!isLive(copy, now)) {
+        report.expired.push(copy.id)
+        continue
+      }
+      try {
+        this.assertWritable(copy)
+      } catch (err) {
+        report.rejected.push({id: copy.id, reason: err instanceof Error ? err.message : String(err)})
+        continue
+      }
+      accepted.push(copy)
+    }
+
     for (const id of [...this.rows.keys()]) await this.storage.delete(KEY_PREFIX + id)
     this.rows.clear()
     this.slotOf.clear()
     this.vectors = new VectorSet(this.provider.dimensions)
-    for (const m of dump.memories) {
-      const copy: Memory = {...m, embedded: false}
+    this.dirtyVectors = true
+    for (const copy of accepted) {
       this.rows.set(copy.id, copy)
       await this.persistRow(copy)
-      await this.embedOne(copy)
     }
     await this.persistIndex()
-    return this.rows.size
+    await this.flushQueue()
+    report.imported = accepted.length
+    return report
   }
 
-  /** Embed everything still queued. Called on reconnect. Returns how many landed. */
-  async flushQueue(): Promise<number> {
+  /**
+   * Embed everything still queued. Called on reconnect. Returns how many landed.
+   *
+   * In batches, each committed as it lands. Sending the whole queue as one
+   * request meant a connection that dropped partway lost every vector already
+   * computed, and the retry started from zero — on a train, forever.
+   */
+  async flushQueue(opts: {batchSize?: number} = {}): Promise<number> {
     await this.load()
     if (!this.embeddingsEnabled) return 0
+    const batchSize = Math.max(1, opts.batchSize ?? FLUSH_BATCH_SIZE)
     const pending = [...this.rows.values()].filter(m => !m.embedded)
-    if (pending.length === 0) return 0
     let done = 0
-    try {
-      const vecs = await this.provider.embed(pending.map(m => m.text))
-      for (let i = 0; i < pending.length; i++) {
-        this.putVector(pending[i].id, normalize(vecs[i]))
-        pending[i].embedded = true
-        await this.persistRow(pending[i])
+    for (let i = 0; i < pending.length; i += batchSize) {
+      const batch = pending.slice(i, i + batchSize)
+      let vecs: Float32Array[]
+      try {
+        vecs = await this.provider.embed(batch.map(m => m.text))
+      } catch (err) {
+        if (!(err instanceof EmbeddingUnavailableError)) throw err
+        break
+      }
+      for (let j = 0; j < batch.length; j++) {
+        // The row may have been deleted or edited while the request was out.
+        if (this.rows.get(batch[j].id) !== batch[j]) continue
+        this.putVector(batch[j].id, normalize(vecs[j]))
+        batch[j].embedded = true
+        await this.persistRow(batch[j])
         done++
       }
-    } catch (err) {
-      if (!(err instanceof EmbeddingUnavailableError)) throw err
+      await this.persistIndex()
     }
-    if (done) await this.persistIndex()
     return done
   }
 
@@ -504,7 +659,47 @@ export class MemoryService implements MemoryStore {
     }
   }
 
+  /** Scopes revoked on this device, for the transparency view and for audit. */
+  async revokedScopes(): Promise<string[]> {
+    await this.load()
+    return [...this.revoked].sort()
+  }
+
   // ---- internals -------------------------------------------------------
+
+  /**
+   * The write-path rules, in one place so that add, update and import cannot
+   * drift apart. ADR-002: enforcing this anywhere other than every write makes
+   * it a convention rather than a guarantee.
+   */
+  private assertWritable(m: Pick<Memory, "class" | "text" | "approved" | "source">) {
+    const provenance = m.source.provenance ?? "self_reported"
+    // Completeness of deletion cannot be proven by searching for leftovers. It
+    // is provable only if an untagged write was impossible.
+    if (provenance === "captured" && !m.source.scopeId) throw new UnscopedCaptureError()
+    if (provenance === "self_reported" && m.source.scopeId) {
+      // Refused rather than ignored. A scope on a note nobody consented to
+      // would make a later deletion look complete when it had covered
+      // something it never needed to.
+      throw new Error(
+        "A self_reported memory must not carry a scopeId: it implies a consent scope that does not apply.",
+      )
+    }
+    if (m.source.scopeId && this.revoked.has(m.source.scopeId)) throw new RevokedScopeError(m.source.scopeId)
+
+    // An inferred memory is a guess. It is never stored unapproved, and never
+    // at all if it reads as a sensitive attribute the user did not state.
+    if (m.class === "inferred_preference") {
+      if (!m.approved) throw new Error("An inferred preference needs explicit approval before it can be stored.")
+      const category = detectSensitive(m.text)
+      if (category) throw new SensitiveInferenceError(category)
+    }
+  }
+
+  private expiryAtCreate(cls: MemoryClass, t: number): number | undefined {
+    const after = this.retention[cls]?.afterCreateMs
+    return after === undefined ? undefined : t + after
+  }
 
   private async embedOne(m: Memory): Promise<void> {
     if (!this.embeddingsEnabled) return
@@ -551,4 +746,19 @@ export class MemoryService implements MemoryStore {
       this.dirtyVectors = false
     }
   }
+}
+
+function newestFirst(a: Pick<Memory, "updatedAt" | "id">, b: Pick<Memory, "updatedAt" | "id">): number {
+  return b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+}
+
+function encodeCursor(m: Memory): string {
+  return `${m.updatedAt}:${m.id}`
+}
+
+function decodeCursor(cursor: string): Pick<Memory, "updatedAt" | "id"> {
+  const i = cursor.indexOf(":")
+  const updatedAt = Number(cursor.slice(0, i))
+  if (i < 0 || !Number.isFinite(updatedAt)) throw new Error("Malformed page cursor")
+  return {updatedAt, id: cursor.slice(i + 1)}
 }

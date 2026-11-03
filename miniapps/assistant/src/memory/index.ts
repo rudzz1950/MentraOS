@@ -4,7 +4,8 @@ export {FakeEmbeddingProvider, HttpEmbeddingProvider, EmbeddingUnavailableError}
 export {MemoryKeyValueStore, MemoryBlobStore} from "./ports"
 export type {KeyValueStore, BlobStore} from "./ports"
 export {SensitiveInferenceError} from "./sensitive"
-export {UnscopedCaptureError} from "./memory"
+export {UnscopedCaptureError, RevokedScopeError, MAX_PAGE_SIZE} from "./memory"
+export {MemoryMaintenance, type MaintenanceOptions, type MaintenanceReport} from "./maintenance"
 export {
   CONTRADICTION_THRESHOLD,
   DUPLICATE_THRESHOLD,

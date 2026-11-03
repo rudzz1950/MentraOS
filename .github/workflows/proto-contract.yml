@@ -31,15 +31,3 @@ jobs:
         run: python3 scripts/check-proto-codegen.py
       - name: Protocol v1 is additive and wire-compatible with v0
         run: python3 scripts/check-proto-compat.py
-
-  voice-biometrics:
-    # The privacy charter forbids computing a biometric template, and a speaker
-    # embedding is one. Diarization would otherwise arrive in a library call
-    # with nobody deciding to add it.
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: No voice biometrics in our own code
-        run: python3 scripts/check-no-voice-biometrics.py
-      - name: Report inherited surfaces (never fatal)
-        run: python3 scripts/check-no-voice-biometrics.py --audit

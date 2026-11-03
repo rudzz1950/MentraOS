@@ -18,7 +18,7 @@ on:
 
 jobs:
   contract:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,7 +36,7 @@ jobs:
     # The privacy charter forbids computing a biometric template, and a speaker
     # embedding is one. Diarization would otherwise arrive in a library call
     # with nobody deciding to add it.
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: No voice biometrics in our own code

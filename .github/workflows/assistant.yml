@@ -1,0 +1,25 @@
+# The assistant miniapp's tests and type check. Before this the suite only ever
+# ran on a developer's machine, so tests that passed only in India time went
+# unnoticed; the runner here is UTC on purpose.
+name: Assistant
+
+on:
+  pull_request:
+    paths:
+      - "miniapps/assistant/**"
+      - ".github/workflows/assistant.yml"
+  push:
+    branches: [myglasses/main]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: miniapps/assistant
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun test src
+      - run: bun run typecheck

@@ -13,7 +13,8 @@ import * as cards from "../hud/cards"
 import {STANDIN_OLED, type PanelProfile} from "../hud/panel"
 import {Addressing} from "./addressing"
 import {BargeIn, OutboundLimit} from "./bargein"
-import {CancelledError, ModelRouter, ModelsUnavailableError, rulesAnswer} from "./model"
+import {allows, DEVICE_ONLY, memoryReach, narrower, type ConsentPolicy, type Locality} from "./egress"
+import {CancelledError, ModelRouter, ModelsUnavailableError, rulesAnswer, type PromptFor} from "./model"
 import {unavailableMessage} from "./providers"
 import {classify, type Intent} from "./router"
 import {TimerStore} from "./timers"
@@ -31,6 +32,11 @@ export interface TurnResult {
   /** True when the wearer spoke over the assistant and the turn was cut short. */
   interrupted?: boolean
   error?: string
+  /**
+   * Context items the answering tier was not allowed to see (egress.ts), for
+   * the "why" view. Absent when nothing was withheld.
+   */
+  withheld?: number
 }
 
 export interface AssistantOptions {
@@ -68,6 +74,11 @@ export interface AssistantOptions {
    * tell a normal user a capability is missing when it is merely offline.
    */
   hasHeavyTier?: boolean
+  /**
+   * How far each consent scope's captured data may travel. Omitted means
+   * captured memories never leave the device. See egress.ts.
+   */
+  consent?: ConsentPolicy
 }
 
 /**
@@ -90,7 +101,7 @@ export class Assistant {
   private readonly outbound: OutboundLimit
   private readonly timers: TimerStore
   /** Recent exchanges, oldest first. Capped; see historyTurns. */
-  private history: {question: string; answer: string}[] = []
+  private history: {question: string; answer: string; reach: Locality}[] = []
   /** Cancels the model and the voice for the turn in flight. */
   private inflight: AbortController | null = null
   private reconfirming = false
@@ -213,10 +224,19 @@ export class Assistant {
     const ctrl = new AbortController()
     this.inflight = ctrl
     try {
-      const result = await this.opts.router.complete(context, {signal: ctrl.signal})
-      this.remember(text, result.text)
+      const result = await this.opts.router.complete(context.promptFor, {signal: ctrl.signal})
+      const shown = context.shownTo.get(result.via)
+      // The answer carries the reach of what it was built from: an answer
+      // drawn from a device-only memory is itself device-only, and must not
+      // ride into a later cloud prompt as "recent conversation".
+      this.remember(text, result.text, shown?.reach ?? "cloud")
       await this.say(result.text)
-      return {intent: "question", answer: result.text, via: result.via}
+      return {
+        intent: "question",
+        answer: result.text,
+        via: result.via,
+        ...(shown?.withheld ? {withheld: shown.withheld} : {}),
+      }
     } catch (err) {
       // Cancellation is the wearer speaking over the assistant. Nothing is
       // retried and nothing is shown: they are already talking.
@@ -242,30 +262,51 @@ export class Assistant {
    * the question. Memory is capped — the panel is small, the budget is small,
    * and a long context buys little on a two-line answer.
    */
-  private async buildContext(text: string): Promise<string> {
+  private async buildContext(text: string): Promise<{
+    promptFor: PromptFor
+    /** Per tier name, what it was shown: the narrowest reach included, and how much was held back. */
+    shownTo: Map<string, {reach: Locality; withheld: number}>
+  }> {
     const k = this.opts.maxMemories ?? 5
+    const policy = this.opts.consent ?? DEVICE_ONLY
     const hits = await this.opts.memory.search(text, k)
     const preferences = await this.opts.memory.list({classes: ["stable_preference"]})
-
-    const parts: string[] = []
-    if (preferences.length) {
-      parts.push("Preferences:\n" + preferences.map(bullet).join("\n"))
-    }
-    if (hits.length) {
-      parts.push("Relevant memories:\n" + hits.map(h => bullet(h.memory)).join("\n"))
-    }
-    // Recent exchanges, so "what about tomorrow" has an antecedent. Without
-    // these every utterance was a cold start and no follow-up could resolve.
     const keep = this.opts.historyTurns ?? 3
-    if (keep > 0 && this.history.length) {
-      const recent = this.history.slice(-keep)
-      parts.push(
-        "Recent conversation:\n" +
-          recent.map(h => `- Asked: ${h.question}\n  Answered: ${h.answer}`).join("\n"),
-      )
+    const recent = keep > 0 ? this.history.slice(-keep) : []
+
+    const prefs = preferences.map(m => ({line: bullet(m), reach: memoryReach(m, policy)}))
+    const mems = hits.map(h => ({line: bullet(h.memory), reach: memoryReach(h.memory, policy)}))
+    const turns = recent.map(h => ({line: `- Asked: ${h.question}\n  Answered: ${h.answer}`, reach: h.reach}))
+    const shownTo = new Map<string, {reach: Locality; withheld: number}>()
+
+    const promptFor: PromptFor = tier => {
+      const where: Locality = tier.locality ?? "cloud"
+      let reach: Locality = "cloud"
+      let withheld = 0
+      const fit = (items: {line: string; reach: Locality}[]) =>
+        items.filter(i => {
+          if (!allows(i.reach, where)) {
+            withheld++
+            return false
+          }
+          reach = narrower(reach, i.reach)
+          return true
+        })
+
+      const parts: string[] = []
+      const p = fit(prefs)
+      if (p.length) parts.push("Preferences:\n" + p.map(i => i.line).join("\n"))
+      const m = fit(mems)
+      if (m.length) parts.push("Relevant memories:\n" + m.map(i => i.line).join("\n"))
+      // Recent exchanges, so "what about tomorrow" has an antecedent. Without
+      // these every utterance was a cold start and no follow-up could resolve.
+      const t = fit(turns)
+      if (t.length) parts.push("Recent conversation:\n" + t.map(i => i.line).join("\n"))
+      parts.push(`Question: ${text}`)
+      shownTo.set(tier.name, {reach, withheld})
+      return parts.join("\n\n")
     }
-    parts.push(`Question: ${text}`)
-    return parts.join("\n\n")
+    return {promptFor, shownTo}
   }
 
   /**
@@ -328,10 +369,10 @@ export class Assistant {
    * recording an error as an answer would have the model treat "can't reach
    * the assistant" as a fact about the world.
    */
-  private remember(question: string, answer: string): void {
+  private remember(question: string, answer: string, reach: Locality): void {
     const keep = this.opts.historyTurns ?? 3
     if (keep <= 0) return
-    this.history.push({question, answer})
+    this.history.push({question, answer, reach})
     // Bounded: a wearable conversation is short and the panel is two lines.
     while (this.history.length > keep) this.history.shift()
   }

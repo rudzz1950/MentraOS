@@ -70,6 +70,8 @@ export interface MemorySource {
   turnAt: number
   /** Verbatim user utterance, when the memory was stated rather than derived. */
   utterance?: string
+  /** The device the turn happened on (ANI-203), so provenance can say where a fact came from. */
+  deviceId?: string
   /**
    * Defaults to "self_reported" when absent, because every memory this store
    * held before this field existed came from the wearer's own dictation. A

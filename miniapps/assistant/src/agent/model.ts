@@ -16,6 +16,13 @@ export interface RouteResult {
   via: "rules" | string
 }
 
+/**
+ * A prompt built for the tier about to receive it. Consent decides what each
+ * tier may be shown (egress.ts), so one string for every tier would be either
+ * a leak or the most restrictive tier's context everywhere.
+ */
+export type PromptFor = (tier: ModelClient) => string
+
 /** Answers that need no model at all. Returns null when it cannot help. */
 export function rulesAnswer(text: string, clock: Clock): string | null {
   const t = text.trim().toLowerCase()
@@ -51,7 +58,7 @@ export class ModelRouter {
    * one and immediately started tier two. Cancellation ends the turn.
    */
   async complete(
-    prompt: string,
+    prompt: string | PromptFor,
     opts: {onChunk?: (s: string) => void; signal?: AbortSignal} = {},
   ): Promise<RouteResult> {
     const {onChunk, signal} = opts
@@ -66,7 +73,8 @@ export class ModelRouter {
       signal?.addEventListener("abort", relay, {once: true})
       let out = ""
       try {
-        for await (const chunk of tier.complete(prompt, ctrl.signal)) {
+        const input = typeof prompt === "string" ? prompt : prompt(tier)
+        for await (const chunk of tier.complete(input, ctrl.signal)) {
           // Checked between chunks as well as on abort: a generator that
           // ignores its signal would otherwise keep streaming into a HUD the
           // user has already spoken over.

@@ -34,6 +34,11 @@ export interface Voice {
 /** One model, streaming. Routing across several lives in model.ts. */
 export interface ModelClient {
   readonly name: string
+  /**
+   * Where this model runs: "device", "site" or "cloud". Decides which context
+   * it may be shown (see egress.ts). Absent is read as "cloud", the farthest.
+   */
+  readonly locality?: "device" | "site" | "cloud"
   /** Yields the answer in pieces. Throws to signal failure or timeout. */
   complete(prompt: string, signal: AbortSignal): AsyncIterable<string>
 }

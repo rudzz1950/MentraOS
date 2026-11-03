@@ -47,6 +47,14 @@ export interface ModelTierConfig {
    * one whose absence is a deployment decision rather than a fault.
    */
   role?: "small" | "heavy"
+  /**
+   * Where the endpoint runs, which bounds what it may be shown (egress.ts).
+   * Left out, it is treated as "cloud" — an endpoint nobody described is
+   * assumed to be the farthest one, because the opposite default is how a
+   * leak gets configured. A plant's own server should say "site"; a model on
+   * the phone or puck should say "device".
+   */
+  locality?: "device" | "site" | "cloud"
 }
 
 export interface AssistantModelConfig {
@@ -86,6 +94,7 @@ export function createOpenAICompatibleClient(
 
   return {
     name: tier.name,
+    locality: tier.locality ?? "cloud",
     async *complete(prompt: string, signal: AbortSignal): AsyncIterable<string> {
       const headers: Record<string, string> = {"content-type": "application/json"}
       const key = opts.apiKey ? await opts.apiKey(tier) : null

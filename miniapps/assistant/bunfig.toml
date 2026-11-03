@@ -1,0 +1,5 @@
+[test]
+# The fixtures are written in India time (+05:30) and the clock, timer and alarm
+# code reads the phone's local zone, as it should. Pin the zone so the suite
+# gives the same answer on a laptop in Bengaluru and a CI runner in UTC.
+preload = ["./test-setup.ts"]

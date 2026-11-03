@@ -8,6 +8,7 @@
  */
 
 import type {Clock, ModelClient} from "./ports"
+import {formatClock} from "./timers"
 
 export interface RouteResult {
   text: string
@@ -19,10 +20,7 @@ export interface RouteResult {
 export function rulesAnswer(text: string, clock: Clock): string | null {
   const t = text.trim().toLowerCase()
   if (/\b(what('s| is)? the )?time\b/.test(t) && !t.includes("time to")) {
-    const d = new Date(clock.now())
-    const hh = d.getHours() % 12 || 12
-    const mm = d.getMinutes().toString().padStart(2, "0")
-    return `${hh}:${mm} ${d.getHours() < 12 ? "am" : "pm"}`
+    return formatClock(clock.now())
   }
   return null
 }

@@ -1,0 +1,34 @@
+# Privacy guardrails. Deliberately no path filter: these used to live in the
+# protocol workflow, which only runs when proto/ changes, so a pull request
+# adding diarization or a fine-tune call to the assistant was never checked
+# before it merged.
+name: Guardrails
+
+on:
+  pull_request:
+  push:
+    branches: [myglasses/main]
+
+jobs:
+  voice-biometrics:
+    # The privacy charter forbids computing a biometric template, and a speaker
+    # embedding is one. Diarization would otherwise arrive in a library call
+    # with nobody deciding to add it.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: No voice biometrics in our own code
+        run: python3 scripts/check-no-voice-biometrics.py
+      - name: Report inherited surfaces (never fatal)
+        run: python3 scripts/check-no-voice-biometrics.py --audit
+
+  no-training-on-user-data:
+    # ANI-90. Weights cannot honour a revocation, so nothing captured may be
+    # trained on; fine-tuning is for synthetic or curated data only.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The check's own tests
+        run: python3 scripts/test_check_no_training_on_user_data.py
+      - name: No training on user data
+        run: python3 scripts/check-no-training-on-user-data.py

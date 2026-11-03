@@ -43,3 +43,16 @@ jobs:
         run: python3 scripts/test_check_bus_imports.py
       - name: Zenoh only behind its adapter
         run: python3 scripts/check-bus-imports.py
+
+  ecosystem-contract:
+    # ANI-177: the ring/phone/glasses contract is proto/ecosystem_events.v1.json;
+    # the C header and the TypeScript are generated from it and must not drift.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generated code matches the contract
+        run: python3 scripts/gen-ecosystem-c.py --check
+      - name: The C header compiles cleanly
+        run: |
+          printf '#include "ecosystem_events.h"\nint main(void){return ECO_CONTRACT_VERSION == 0;}\n' > /tmp/eco.c
+          gcc -std=c11 -Wall -Wextra -Werror -Iproto -o /tmp/eco /tmp/eco.c

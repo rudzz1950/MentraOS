@@ -42,6 +42,8 @@ export class ProductQa {
       now: () => number
       /** Follow-ups are answered against the same capture for this long. Two minutes by default. */
       captureTtlMs?: number
+      /** Packaged products (the default), or any document, object or scene (ANI-168). */
+      mode?: "product" | "scene"
     },
   ) {}
 
@@ -74,7 +76,7 @@ export class ProductQa {
     let raw: unknown
     try {
       raw = await this.opts.model.ask(
-        {requestId: `qa-${c.image.captureId}-${++this.n}`, image: c.image, prompt: buildPrompt(question, c.image.captureId, c.ocr)},
+        {requestId: `qa-${c.image.captureId}-${++this.n}`, image: c.image, prompt: buildPrompt(question, c.image.captureId, c.ocr, this.opts.mode)},
         signal,
       )
     } catch (err) {

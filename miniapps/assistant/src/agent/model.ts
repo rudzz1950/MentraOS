@@ -59,14 +59,19 @@ export class ModelRouter {
    */
   async complete(
     prompt: string | PromptFor,
-    opts: {onChunk?: (s: string) => void; signal?: AbortSignal} = {},
+    opts: {onChunk?: (s: string) => void; signal?: AbortSignal; onTierStart?: (tier: ModelClient, attempt: number) => void} = {},
   ): Promise<RouteResult> {
-    const {onChunk, signal} = opts
+    const {onChunk, signal, onTierStart} = opts
+    let attempt = 0
     const failures: string[] = []
 
     if (signal?.aborted) throw new CancelledError()
 
     for (const tier of this.tiers) {
+      // Streamed speech needs to know where one tier's chunks end and the
+      // next tier's begin, so a failed partial answer is not stitched to the
+      // next one (agent/speech.ts).
+      onTierStart?.(tier, attempt++)
       const ctrl = new AbortController()
       const timer = this.setTimer(() => ctrl.abort(), this.timeoutMs)
       const relay = () => ctrl.abort()
